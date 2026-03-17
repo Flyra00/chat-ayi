@@ -1039,6 +1039,27 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return sb.ToString().Trim();
     }
 
+    private static string GetStrictBrowseTemplateInstruction()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("KONSTRAINT OUTPUT /browse (WAJIB):");
+        sb.AppendLine("- Jawaban akhir HARUS Bahasa Indonesia.");
+        sb.AppendLine("- Ringkas, jelas, dan langsung ke inti (hindari paragraf panjang).");
+        sb.AppendLine("- Jangan copy-tempel kalimat panjang dari halaman sumber.");
+        sb.AppendLine("- Jika sumber berbahasa Inggris, parafrasekan ke Bahasa Indonesia.");
+        sb.AppendLine("- Jika konten tidak cukup jelas/noisy, akui keterbatasan data secara jujur.");
+        sb.AppendLine("- Tetap sudut pandang pihak ketiga, jangan roleplay subjek halaman.");
+        sb.AppendLine();
+        sb.AppendLine("Template wajib:");
+        sb.AppendLine("[RINGKASAN]");
+        sb.AppendLine("- <2-4 poin inti>");
+        sb.AppendLine("[POIN PENTING]");
+        sb.AppendLine("- <fakta penting dari halaman, singkat>");
+        sb.AppendLine("Sumber:");
+        sb.AppendLine("[1] <url>");
+        return sb.ToString().Trim();
+    }
+
     private static string BuildSafetyAndBoundariesInstruction(
         string purpose,
         string thinkingInstruction,
@@ -1231,6 +1252,86 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         {
             return SessionContextSnapshot.Create(sessionId, Enumerable.Empty<(string Role, string Content)>(), Enumerable.Empty<string>());
         }
+    }
+
+    private async Task<SessionContextSnapshot> BuildSessionContextSnapshotForNormalChatAsync(string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
+            var recent = BuildRecentNormalChatTurns(transcript, maxTurns: 6);
+            var summary = TryExtractSummaryBullets(transcript);
+            return SessionContextSnapshot.Create(sessionId, recent, summary);
+        }
+        catch
+        {
+            return SessionContextSnapshot.Create(sessionId, Enumerable.Empty<(string Role, string Content)>(), Enumerable.Empty<string>());
+        }
+    }
+
+    private static IReadOnlyList<(string Role, string Content)> BuildRecentNormalChatTurns(
+        IReadOnlyList<LocalSessionStore.SessionTranscriptEntry> transcript,
+        int maxTurns)
+    {
+        if (transcript is null || transcript.Count == 0)
+            return Array.Empty<(string Role, string Content)>();
+
+        var filtered = new List<(string Role, string Content)>();
+        var skipNextAssistant = false;
+        var skippedCommandTurns = 0;
+        var skippedAssistantAfterCommand = 0;
+
+        foreach (var entry in transcript)
+        {
+            var role = (entry.Role ?? string.Empty).Trim().ToLowerInvariant();
+            var content = (entry.Content ?? string.Empty).Trim();
+            if (content.Length == 0)
+                continue;
+
+            if (role == "user")
+            {
+                if (IsCommandMessage(content))
+                {
+                    skipNextAssistant = true;
+                    skippedCommandTurns++;
+                    continue;
+                }
+
+                skipNextAssistant = false;
+                filtered.Add(("user", content));
+                continue;
+            }
+
+            if (role == "assistant")
+            {
+                if (skipNextAssistant)
+                {
+                    skipNextAssistant = false;
+                    skippedAssistantAfterCommand++;
+                    continue;
+                }
+
+                filtered.Add(("assistant", content));
+            }
+        }
+
+        if (skippedCommandTurns > 0 || skippedAssistantAfterCommand > 0)
+        {
+            Debug.WriteLine($"[ContextFilter] removed command turns={skippedCommandTurns}, removed assistant command replies={skippedAssistantAfterCommand}, remaining={filtered.Count}");
+        }
+
+        if (filtered.Count <= maxTurns)
+            return filtered;
+
+        return filtered.Skip(filtered.Count - maxTurns).ToList();
+    }
+
+    private static bool IsCommandMessage(string text)
+    {
+        var value = (text ?? string.Empty).TrimStart();
+        return value.StartsWith("/search", StringComparison.OrdinalIgnoreCase)
+               || value.StartsWith("/browse", StringComparison.OrdinalIgnoreCase)
+               || value.StartsWith("/remember", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<string> TryExtractSummaryBullets(IReadOnlyList<LocalSessionStore.SessionTranscriptEntry> transcript)
@@ -1821,6 +1922,37 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return true;
     }
 
+    private static List<int> BuildSearchBrowseCandidateOrder(IReadOnlyList<FreeSearchClient.SearchResult> results)
+    {
+        var nonWiki = new List<int>();
+        var wiki = new List<int>();
+
+        for (var i = 0; i < results.Count; i++)
+        {
+            var url = results[i]?.Url ?? string.Empty;
+            if (IsWikipediaUrl(url))
+                wiki.Add(i);
+            else
+                nonWiki.Add(i);
+        }
+
+        nonWiki.AddRange(wiki);
+        return nonWiki;
+    }
+
+    private static bool IsWikipediaUrl(string url)
+    {
+        if (!Uri.TryCreate(url ?? string.Empty, UriKind.Absolute, out var uri))
+            return false;
+
+        var host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
+        if (host.StartsWith("www.", StringComparison.Ordinal))
+            host = host.Substring(4);
+
+        return host.Equals("wikipedia.org", StringComparison.Ordinal)
+               || host.EndsWith(".wikipedia.org", StringComparison.Ordinal);
+    }
+
     public ObservableCollection<ChatMessage> Messages { get; }
 
     public bool IsSending => _isSending;
@@ -1873,7 +2005,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
 
             if (await TryHandleIdentityQuestionAsync(prompt, assistant, _cts.Token))
+            {
+                Debug.WriteLine("[Routing] branch=identity-question");
                 return;
+            }
 
             if (!await EnsureApiKeyAsync(CurrentProvider))
             {
@@ -1893,101 +2028,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
             if (prompt.StartsWith("/remember", StringComparison.OrdinalIgnoreCase))
             {
-                if (!EnableRemember)
-                {
-                    assistant.Content = "Remember is disabled. Enable it in Settings.";
-                    return;
-                }
-
-                assistant.Content = "Saving memory...";
-
-                // Syntax:
-                // - /remember
-                // - /remember daily <note>
-                // - /remember longterm <note>
-                // - /remember both <note>
-                var rest = prompt.Length > 8 ? prompt.Substring(8).Trim() : string.Empty;
-                var target = "both";
-                var note = string.Empty;
-
-                if (!string.IsNullOrWhiteSpace(rest))
-                {
-                    var parts = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-                    var maybeTarget = parts[0].Trim().ToLowerInvariant();
-                    if (maybeTarget is "daily" or "longterm" or "long" or "memory" or "both" or "all" or "*")
-                    {
-                        target = maybeTarget == "long" ? "longterm" : maybeTarget;
-                        note = parts.Length > 1 ? parts[1].Trim() : string.Empty;
-                    }
-                    else
-                    {
-                        note = rest;
-                    }
-                }
-
-                var recentLines = await _sessions.ReadRecentChatAsync(sessionId, 30, _cts.Token);
-                if (recentLines.Count == 0)
-                {
-                    assistant.Content = "Error: No session transcript found yet";
-                    return;
-                }
-
-                var transcript = new StringBuilder();
-                foreach (var (role, content) in recentLines)
-                {
-                    transcript.Append(role.ToUpperInvariant());
-                    transcript.Append(": ");
-                    transcript.AppendLine(content.Replace("\r\n", "\n").Replace("\r", "\n"));
-                    transcript.AppendLine();
-                }
-
-                var memoryResult = await _api.ExtractMemoryAsync(provider, transcript.ToString(), note, model, _cts.Token);
-                var longterm = memoryResult.Longterm;
-                var daily = memoryResult.Daily;
-
-                static bool LooksLikeSecret(string s)
-                {
-                    var t = (s ?? string.Empty).ToLowerInvariant();
-                    if (t.Contains("api key") || t.Contains("apikey") || t.Contains("token") || t.Contains("password")) return true;
-                    if (t.Contains("csk-") || t.Contains("sk-") || t.Contains("bearer ")) return true;
-                    return false;
-                }
-
-                longterm = longterm.Where(x => !LooksLikeSecret(x)).Take(8).ToList();
-                daily = daily.Where(x => !LooksLikeSecret(x)).Take(8).ToList();
-
-                var wroteLong = 0;
-                var wroteDaily = 0;
-                if (target is "both" or "all" or "*" or "longterm" or "long" or "memory")
-                {
-                    if (target is "longterm" or "long" or "memory")
-                        daily.Clear();
-                    await _memory.AppendLongTermManyAsync(longterm, _cts.Token);
-                    wroteLong = longterm.Count;
-                }
-                if (target is "both" or "all" or "*" or "daily")
-                {
-                    if (target is "daily")
-                        longterm.Clear();
-                    await _memory.AppendDailyManyAsync(daily, date: null, _cts.Token);
-                    wroteDaily = daily.Count;
-                }
-
-                await AppendSessionRecordAsync(
-                    sessionId,
-                    "system",
-                    $"/remember wrote longterm={wroteLong} daily={wroteDaily}",
-                    model,
-                    string.Empty,
-                    _cts.Token);
-
-                assistant.Content = $"Remember OK\nlongterm: {wroteLong}\ndaily: {wroteDaily}";
-
+                Debug.WriteLine("[Routing] branch=remember (disabled explicit-only)");
+                assistant.Content = "Command /remember dinonaktifkan untuk menjaga mode memory explicit-only. Gunakan /memory add|update|delete atau perintah eksplisit seperti 'ingat ini ...'.";
                 return;
             }
 
             if (TryParseSearchCommand(prompt, out var searchQuery))
             {
+                Debug.WriteLine("[Routing] branch=search");
                 if (!EnableWebTools)
                 {
                     assistant.Content = "Web tools are disabled. Enable them in Settings.";
@@ -2027,18 +2075,22 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     return;
                 }
 
-                // Combine search + browse: fetch up to two successful pages.
+                // Combine search + browse: prefer non-wiki pages first and fetch up to three successful pages.
                 var pages = new List<(int Index, BrowseClient.BrowsePage Page)>();
-                for (var i = 0; i < results.Count && pages.Count < 2; i++)
+                var browseCandidates = BuildSearchBrowseCandidateOrder(results);
+                foreach (var idx in browseCandidates)
                 {
+                    if (pages.Count >= 3)
+                        break;
+
                     try
                     {
-                        var p = await _browse.FetchAsync(results[i].Url, _cts.Token);
-                        pages.Add((i + 1, p));
+                        var p = await _browse.FetchAsync(results[idx].Url, _cts.Token);
+                        pages.Add((idx + 1, p));
                     }
                     catch
                     {
-                        // Ignore browse failures; we still have snippets.
+                        // Keep trying other candidates if one source fails to browse.
                     }
                 }
 
@@ -2066,7 +2118,6 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 }
 
                 var searchModel = model;
-                var searchMemoryContext = await _memory.GetContextAsync(searchQuery, _cts.Token);
                 var searchThinking = GetThinkingInstruction();
                 var searchFormat = GetStrictSearchTemplateInstruction();
                 var searchSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
@@ -2077,6 +2128,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.\n" +
                     "- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).\n" +
                     "- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.\n" +
+                    "- Jika sumber didominasi wiki sementara sumber non-wiki tipis/gagal di-browse, tulis keterbatasan data secara eksplisit di [FAKTA].\n" +
                     "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.\n\n" +
                     "[STRICT OUTPUT RULES - IDENTITY SAFETY]\n" +
                     "- Kamu adalah ChatAyi, bukan subjek yang dibahas.\n" +
@@ -2091,7 +2143,6 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchThinking,
                     searchFormat,
                     searchGroundingRules,
-                    string.IsNullOrWhiteSpace(searchMemoryContext) ? null : "Local memory (if relevant):\n\n" + searchMemoryContext,
                     "Search results (Jina primary + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 
@@ -2155,6 +2206,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
             if (prompt.StartsWith("/browse", StringComparison.OrdinalIgnoreCase))
             {
+                Debug.WriteLine("[Routing] branch=browse");
                 if (!EnableWebTools)
                 {
                     assistant.Content = "Web tools are disabled. Enable them in Settings.";
@@ -2188,15 +2240,17 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 var browseModel = model;
                 var q = string.IsNullOrWhiteSpace(question) ? "Ringkas isi halaman ini dalam bahasa Indonesia." : question;
-                var browseMemoryContext = await _memory.GetContextAsync(q, _cts.Token);
                 var browseThinking = GetThinkingInstruction();
-                var browseFormat = GetResponseFormatInstruction(hasSources: true);
+                var browseFormat = GetStrictBrowseTemplateInstruction();
 
                 var pageBlock = new StringBuilder();
                 pageBlock.AppendLine("[1] " + page.Url);
                 if (!string.IsNullOrWhiteSpace(page.Title)) pageBlock.AppendLine(page.Title);
                 pageBlock.AppendLine();
-                pageBlock.AppendLine(page.Text);
+                var compactText = page.Text;
+                if (compactText.Length > 7000)
+                    compactText = compactText.Substring(0, 7000) + "\n\n[...excerpt truncated for concise grounding...]";
+                pageBlock.AppendLine(compactText);
 
                 var browseSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
                 var browseGroundingRules =
@@ -2206,11 +2260,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "- Jika konten halaman tidak cukup/jelas, nyatakan keterbatasannya secara jujur.\n" +
                     "- Tetap netral pihak ketiga, jangan roleplay sebagai subjek halaman.";
                 var browseSafety = BuildSafetyAndBoundariesInstruction(
-                    "Gunakan bukti dari halaman web yang diberikan dan cantumkan sitasi [1]. Jawaban harus Bahasa Indonesia.",
+                    "Gunakan bukti dari halaman web yang diberikan dan cantumkan sitasi [1]. Jawaban harus Bahasa Indonesia, ringkas, dan tidak seperti dump mentah.",
                     browseThinking,
                     browseFormat,
                     browseGroundingRules,
-                    string.IsNullOrWhiteSpace(browseMemoryContext) ? null : "Local memory (if relevant):\n\n" + browseMemoryContext,
                     "Web page excerpt:\n\n" + pageBlock.ToString().Trim());
 
                 var browseRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
@@ -2272,6 +2325,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             }
 
             IReadOnlyList<PersonalMemoryItem> relevantMemories = Array.Empty<PersonalMemoryItem>();
+            Debug.WriteLine("[Routing] branch=normal-chat");
             if (!_isMemoryTemporarilyOff)
             {
                 try
@@ -2287,7 +2341,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
             var chatThinking = GetThinkingInstruction();
             var chatFormat = GetResponseFormatInstruction(hasSources: false);
-            var sessionSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+            var sessionSnapshot = await BuildSessionContextSnapshotForNormalChatAsync(sessionId, _cts.Token);
             var chatSafety = BuildSafetyAndBoundariesInstruction(
                 "Use structured personal memory references only when relevant. If memory conflicts with the latest user message, follow the latest user message.",
                 chatThinking,

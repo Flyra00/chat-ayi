@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -25,6 +26,7 @@ public sealed class FreeSearchClient
         query = (query ?? string.Empty).Trim();
         if (query.Length == 0) return new List<SearchResult>();
         maxResults = Math.Clamp(maxResults, 1, StableMaxResults);
+        Debug.WriteLine($"[SearchFlow] query='{query}' maxResults={maxResults}");
 
         var combined = new List<SearchResult>();
 
@@ -32,8 +34,11 @@ public sealed class FreeSearchClient
         try
         {
             var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
+            Debug.WriteLine($"[SearchFlow] provider=jina raw={jina.Count}");
             jina = FilterResults(jina, maxResults);
+            Debug.WriteLine($"[SearchFlow] provider=jina filtered={jina.Count}");
             AppendMissingDiverse(combined, jina, maxResults);
+            Debug.WriteLine($"[SearchFlow] combined-after-jina={combined.Count}");
         }
         catch
         {
@@ -46,10 +51,13 @@ public sealed class FreeSearchClient
             try
             {
                 var searxng = await _searxng.SearchAsync(query, maxResults, ct);
+                Debug.WriteLine($"[SearchFlow] provider=searxng raw={searxng.Count}");
                 var mapped = FilterResults(
                     searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
                     maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=searxng filtered={mapped.Count}");
                 AppendMissingDiverse(combined, mapped, maxResults);
+                Debug.WriteLine($"[SearchFlow] combined-after-searxng={combined.Count}");
             }
             catch
             {
@@ -66,10 +74,13 @@ public sealed class FreeSearchClient
             try
             {
                 var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
+                Debug.WriteLine($"[SearchFlow] provider=ddg raw={ddg.Count}");
                 var mapped = FilterResults(
                     ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
                     maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=ddg filtered={mapped.Count}");
                 AppendMissingDiverse(combined, mapped, maxResults);
+                Debug.WriteLine($"[SearchFlow] combined-after-ddg={combined.Count}");
             }
             catch
             {
@@ -83,8 +94,11 @@ public sealed class FreeSearchClient
             try
             {
                 var gh = await SearchGitHubAsync(query, Math.Min(5, maxResults), ct);
+                Debug.WriteLine($"[SearchFlow] provider=github raw={gh.Count}");
                 gh = FilterResults(gh, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=github filtered={gh.Count}");
                 AppendMissingDiverse(combined, gh, maxResults);
+                Debug.WriteLine($"[SearchFlow] combined-after-github={combined.Count}");
             }
             catch
             {
@@ -98,8 +112,11 @@ public sealed class FreeSearchClient
             try
             {
                 var wiki = await SearchWikipediaAsync(query, Math.Min(5, maxResults), ct);
+                Debug.WriteLine($"[SearchFlow] provider=wikipedia raw={wiki.Count}");
                 wiki = FilterResults(wiki, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=wikipedia filtered={wiki.Count}");
                 AppendMissingDiverse(combined, wiki, maxResults);
+                Debug.WriteLine($"[SearchFlow] combined-after-wikipedia={combined.Count}");
             }
             catch
             {
@@ -108,7 +125,15 @@ public sealed class FreeSearchClient
         }
 
         if (combined.Count > 0)
+        {
+            var sourceCounts = string.Join(", ",
+                combined.GroupBy(x => string.IsNullOrWhiteSpace(x.Source) ? "unknown" : x.Source)
+                    .Select(g => $"{g.Key}:{g.Count()}"));
+            Debug.WriteLine($"[SearchFlow] final={combined.Count} sources=[{sourceCounts}]");
             return combined.Take(maxResults).ToList();
+        }
+
+        Debug.WriteLine("[SearchFlow] final=0");
 
         return new List<SearchResult>();
     }
@@ -256,16 +281,28 @@ public sealed class FreeSearchClient
                 var source = (r.Source ?? string.Empty).Trim();
 
                 if (url.Length == 0)
+                {
+                    LogFilterDrop("empty-url", source, url);
                     return null;
+                }
 
                 if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                {
+                    LogFilterDrop("invalid-url", source, url);
                     return null;
+                }
 
                 if (uri.Scheme is not ("http" or "https"))
+                {
+                    LogFilterDrop("non-http", source, url);
                     return null;
+                }
 
                 if (IsLowQualitySource(uri, title, snippet, source))
+                {
+                    LogFilterDrop("low-quality", source, url);
                     return null;
+                }
 
                 var score = GetSourcePriority(uri, title, snippet, source);
                 return new { title, url, snippet, source, uri, score };
@@ -288,14 +325,30 @@ public sealed class FreeSearchClient
             var uri = c.uri;
 
             var urlKey = NormalizeUrlKey(uri);
-            if (!seenUrls.Add(urlKey)) continue;
+            if (!seenUrls.Add(urlKey))
+            {
+                LogFilterDrop("duplicate-url", source, url);
+                continue;
+            }
 
             var domainKey = NormalizeDomainKey(uri.Host);
-            if (domainKey.Length == 0) continue;
-            if (!seenDomains.Add(domainKey)) continue;
+            if (domainKey.Length == 0)
+            {
+                LogFilterDrop("empty-domain", source, url);
+                continue;
+            }
+            if (!seenDomains.Add(domainKey))
+            {
+                LogFilterDrop("duplicate-domain", source, url);
+                continue;
+            }
 
             if (title.Length == 0) title = url;
-            if (title.Length < 3 && snippet.Length < 3) continue;
+            if (title.Length < 3 && snippet.Length < 3)
+            {
+                LogFilterDrop("too-short", source, url);
+                continue;
+            }
 
             outList.Add(new SearchResult(title, url, snippet, source));
             if (outList.Count >= maxResults) break;
@@ -606,5 +659,12 @@ public sealed class FreeSearchClient
         }
 
         return true;
+    }
+
+    private static void LogFilterDrop(string reason, string source, string url)
+    {
+        var safeSource = string.IsNullOrWhiteSpace(source) ? "unknown" : source;
+        var safeUrl = string.IsNullOrWhiteSpace(url) ? "-" : url;
+        Debug.WriteLine($"[SearchFilter] drop reason={reason} source={safeSource} url={safeUrl}");
     }
 }

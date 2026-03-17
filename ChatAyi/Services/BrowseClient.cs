@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -22,9 +23,16 @@ public sealed class BrowseClient
         if (!TryNormalizeUrl(url, out var uri))
             throw new ArgumentException("Invalid URL");
 
+        Debug.WriteLine($"[BrowseFlow] start url={uri}");
+
         var jinaPage = await TryFetchWithJinaAsync(uri, ct);
         if (jinaPage is not null)
+        {
+            Debug.WriteLine($"[BrowseFlow] path=jina success url={uri}");
             return jinaPage;
+        }
+
+        Debug.WriteLine($"[BrowseFlow] path=fallback-http url={uri}");
 
         using var req = new HttpRequestMessage(HttpMethod.Get, uri);
         req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
@@ -65,6 +73,7 @@ public sealed class BrowseClient
                 throw new InvalidOperationException("Page content appears blocked or noisy.");
 
             text = Truncate(text, MaxBrowseChars);
+            Debug.WriteLine($"[BrowseFlow] fallback parse=html chars={text.Length} url={finalUrl}");
             return new BrowsePage(finalUrl, title, text);
         }
 
@@ -77,6 +86,7 @@ public sealed class BrowseClient
                 throw new InvalidOperationException("Page content appears blocked or noisy.");
 
             text = Truncate(text, MaxBrowseChars);
+            Debug.WriteLine($"[BrowseFlow] fallback parse=text chars={text.Length} url={finalUrl}");
             return new BrowsePage(finalUrl, string.Empty, text);
         }
 
@@ -107,17 +117,27 @@ public sealed class BrowseClient
         using (resp)
         {
             if (!resp.IsSuccessStatusCode)
+            {
+                Debug.WriteLine($"[BrowseFlow] jina failed status={(int)resp.StatusCode} url={originalUri}");
                 return null;
+            }
 
             var bytes = await ReadWithLimitAsync(resp, limitBytes: 1_000_000, timeoutCts.Token);
             var raw = Encoding.UTF8.GetString(bytes);
             var text = NormalizeWhitespace(raw);
             if (!IsReadableEnough(text, minChars: 80))
+            {
+                Debug.WriteLine($"[BrowseFlow] jina rejected reason=not-readable url={originalUri}");
                 return null;
+            }
             if (LooksLikeBlockedOrNoisy(text))
+            {
+                Debug.WriteLine($"[BrowseFlow] jina rejected reason=blocked-or-noisy url={originalUri}");
                 return null;
+            }
 
             var title = ExtractReadableTitle(text);
+            Debug.WriteLine($"[BrowseFlow] jina extracted chars={text.Length} url={originalUri}");
             return new BrowsePage(originalUri.ToString(), title, Truncate(text, MaxBrowseChars));
         }
     }
