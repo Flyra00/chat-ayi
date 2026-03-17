@@ -77,9 +77,19 @@ public sealed class SessionCatalogStore
             if (index >= 0)
             {
                 var current = doc.Sessions[index].Normalize();
+                var nextTitle = current.Title;
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    var candidate = title.Trim();
+                    var isPlaceholder = string.IsNullOrWhiteSpace(current.Title)
+                        || string.Equals(current.Title, "New Session", StringComparison.OrdinalIgnoreCase);
+                    if (isPlaceholder)
+                        nextTitle = candidate;
+                }
+
                 updated = current with
                 {
-                    Title = string.IsNullOrWhiteSpace(title) ? current.Title : title.Trim(),
+                    Title = nextTitle,
                     LastActivityUtc = now
                 };
                 doc.Sessions[index] = updated;

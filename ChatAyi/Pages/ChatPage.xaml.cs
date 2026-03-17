@@ -70,6 +70,9 @@ public partial class ChatPage : ContentPage
 
     private int _providerIndex; // 0 = Cerebras, 1 = NVIDIA Integrate, 2 = Inception
     private string _currentModel = "";
+    private SessionMeta _selectedSession;
+    private bool _syncingSessionSelection;
+    private bool _sessionInitialized;
 
     private static readonly string[] CerebrasModels =
     {
@@ -334,6 +337,23 @@ public partial class ChatPage : ContentPage
     public Command ToggleSettingsCommand { get; }
     public Command CloseSettingsCommand { get; }
     public Command RetryOfflineQueueCommand { get; }
+    public ObservableCollection<SessionMeta> SessionItems { get; }
+
+    public SessionMeta SelectedSession
+    {
+        get => _selectedSession;
+        set
+        {
+            if (ReferenceEquals(_selectedSession, value)) return;
+            _selectedSession = value;
+            OnPropertyChanged();
+
+            if (_syncingSessionSelection || value is null)
+                return;
+
+            _ = SwitchToSessionAsync(value.SessionId);
+        }
+    }
 
     public bool EnableOfflineFallback
     {
@@ -505,6 +525,7 @@ public partial class ChatPage : ContentPage
     {
         InitializeComponent();
         Messages = new ObservableCollection<ChatMessage>();
+        SessionItems = new ObservableCollection<SessionMeta>();
         _cts = new CancellationTokenSource();
 
         // Shell route creation does not guarantee DI-based page construction.
@@ -856,6 +877,9 @@ public partial class ChatPage : ContentPage
             _connectivitySubscribed = true;
         }
 
+        if (!_sessionInitialized)
+            await EnsureSessionCatalogInitializedAsync(CancellationToken.None);
+
         if (_checkedKey) return;
         _checkedKey = true;
 
@@ -1012,6 +1036,122 @@ public partial class ChatPage : ContentPage
         return fallback;
     }
 
+    private async void OnNewSessionClicked(object sender, EventArgs e)
+    {
+        await CreateNewSessionAsync();
+    }
+
+    private async Task CreateNewSessionAsync()
+    {
+        var sessionId = Guid.NewGuid().ToString("N");
+        var ct = CancellationToken.None;
+
+        await _sessionCatalog.TouchAsync(sessionId, "New Session", DateTimeOffset.UtcNow, ct);
+        await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
+
+        ResetEphemeralStateForSessionSwitch();
+        await HydrateMessagesAsync(sessionId, ct);
+        await RefreshSessionSelectorAsync(ct, sessionId);
+
+        _sessionInitialized = true;
+    }
+
+    private async Task SwitchToSessionAsync(string sessionId)
+    {
+        if (!SessionMeta.IsSafeSessionId(sessionId))
+            return;
+
+        var ct = CancellationToken.None;
+        await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
+
+        ResetEphemeralStateForSessionSwitch();
+        await HydrateMessagesAsync(sessionId, ct);
+        await RefreshSessionSelectorAsync(ct, sessionId);
+
+        _sessionInitialized = true;
+    }
+
+    private async Task EnsureSessionCatalogInitializedAsync(CancellationToken ct)
+    {
+        if (_sessionInitialized)
+            return;
+
+        var activeSessionId = await GetOrCreateActiveSessionIdAsync(ct);
+        var list = await _sessionCatalog.ListAsync(ct);
+        if (!list.Any(x => string.Equals(x.SessionId, activeSessionId, StringComparison.Ordinal)))
+            await _sessionCatalog.TouchAsync(activeSessionId, "New Session", DateTimeOffset.UtcNow, ct);
+
+        await _sessionCatalog.SetActiveSessionIdAsync(activeSessionId, ct);
+
+        await HydrateMessagesAsync(activeSessionId, ct);
+        await RefreshSessionSelectorAsync(ct, activeSessionId);
+
+        _sessionInitialized = true;
+    }
+
+    private async Task RefreshSessionSelectorAsync(CancellationToken ct, string preferredSessionId = null)
+    {
+        var list = (await _sessionCatalog.ListAsync(ct)).ToList();
+        if (list.Count == 0)
+            return;
+
+        var selectedSessionId = SessionMeta.IsSafeSessionId(preferredSessionId)
+            ? preferredSessionId
+            : await _sessionCatalog.GetActiveSessionIdAsync(ct);
+        if (!SessionMeta.IsSafeSessionId(selectedSessionId))
+            selectedSessionId = list[0].SessionId;
+
+        _syncingSessionSelection = true;
+        try
+        {
+            SessionItems.Clear();
+            foreach (var item in list)
+                SessionItems.Add(item);
+
+            SelectedSession = SessionItems.FirstOrDefault(x => string.Equals(x.SessionId, selectedSessionId, StringComparison.Ordinal))
+                ?? SessionItems.FirstOrDefault();
+        }
+        finally
+        {
+            _syncingSessionSelection = false;
+        }
+
+        OnPropertyChanged(nameof(SessionItems));
+    }
+
+    private void ResetEphemeralStateForSessionSwitch()
+    {
+        _cts.Cancel();
+        _cts = new CancellationTokenSource();
+
+        _isSending = false;
+
+        lock (_offlineQueue)
+        {
+            _offlineQueue.Clear();
+        }
+
+        OnPropertyChanged(nameof(IsSending));
+        OnPropertyChanged(nameof(CanSend));
+        NotifyOfflineUi();
+    }
+
+    private async Task HydrateMessagesAsync(string sessionId, CancellationToken ct)
+    {
+        var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
+        var visible = transcript
+            .Where(x => x.Role is "user" or "assistant")
+            .Select(x => new ChatMessage(x.Role, x.Content))
+            .ToList();
+
+        await MainThread.InvokeOnMainThreadAsync(() =>
+        {
+            Messages.Clear();
+            foreach (var item in visible)
+                Messages.Add(item);
+        });
+    }
+
     private async Task<SessionContextSnapshot> BuildSessionContextSnapshotAsync(string sessionId, CancellationToken ct)
     {
         try
@@ -1097,6 +1237,15 @@ public partial class ChatPage : ContentPage
                 content = safeContent,
                 model = safeModel
             }, ct);
+        }
+
+        try
+        {
+            await RefreshSessionSelectorAsync(CancellationToken.None, sessionId);
+        }
+        catch
+        {
+            // Non-blocking UI refresh.
         }
     }
 

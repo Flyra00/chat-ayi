@@ -20,6 +20,22 @@
                 <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
                     <Label Text="ChatAyi" Style="{StaticResource ChatHeaderTitle}" />
                     <Label Text="{Binding ProviderSubtitle}" Style="{StaticResource ChatHeaderSubtitle}" />
+                    <HorizontalStackLayout Spacing="8">
+                        <Picker WidthRequest="200"
+                                Title="Session"
+                                ItemsSource="{Binding SessionItems}"
+                                ItemDisplayBinding="{Binding SelectorLabel}"
+                                SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                                FontSize="12"
+                                TextColor="White"
+                                BackgroundColor="Transparent" />
+                        <Button Text="New"
+                                Style="{StaticResource ChatHeaderIconButton}"
+                                FontSize="12"
+                                Padding="10,6"
+                                Clicked="OnNewSessionClicked"
+                                SemanticProperties.Hint="Create new session" />
+                    </HorizontalStackLayout>
                 </VerticalStackLayout>
 
                 <Border Grid.Column="2" Style="{StaticResource ChatStatusPill}" VerticalOptions="Center">
