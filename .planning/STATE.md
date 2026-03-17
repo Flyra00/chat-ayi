@@ -5,22 +5,22 @@
 See: .planning/PROJECT.md (updated 2026-03-17)
 
 **Core value:** Deliver a stable personal AI assistant that consistently understands user context and personal knowledge to provide useful, private, and actionable assistance.
-**Current focus:** Phase 2 - Fondasi Persistent Memory
+**Current focus:** Phase 3 - Eksekusi Tool yang Aman
 
 ## Current Position
 
 Phase: 2 of 5 (Fondasi Persistent Memory)
-Plan: 2 of 3 in current phase
-Status: In progress (Phase 2 execution ongoing)
-Last activity: 2026-03-17 - Completed 02-02 runtime memory injection wiring
+Plan: 3 of 3 in current phase
+Status: Complete (Phase 2 completed)
+Last activity: 2026-03-17 - Completed 02-03 explicit memory controls and temporary-off mode
 
-Progress: [########--] 80%
+Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 6.6 min
+- Total plans completed: 6
+- Average duration: 6.2 min
 - Total execution time: 0.6 hours
 
 **By Phase:**
@@ -28,15 +28,16 @@ Progress: [########--] 80%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-identitas-assistant-dan-fondasi-session | 3 | 26m | 8.7m |
-| 02-fondasi-persistent-memory | 2 | 6m | 3.0m |
+| 02-fondasi-persistent-memory | 3 | 11m | 3.7m |
 
 **Recent Trend:**
-- Last 5 plans: 10m, 9m, 7m, 3m, 3m
+- Last 5 plans: 9m, 7m, 3m, 3m, 5m
 - Trend: Improving
 
 *Updated after each plan completion*
 | Phase 02 P01 | 3 min | 2 tasks | 4 files |
 | Phase 02 P02 | 3 min | 2 tasks | 2 files |
+| Phase 02 P03 | 5 min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -59,6 +60,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Implement retrieval with normalized token overlap and strict threshold >= 2 plus max 5 results to satisfy phase constraints without new dependencies.
 - [Phase 02]: Represent injected memory as structured bullet items with category tags and memory IDs so model context remains inspectable and deterministic.
 - [Phase 02]: Keep normal chat resilient by swallowing retrieval exceptions and sending prompt without memory block instead of failing the request.
+- [Phase 02]: Route /memory CRUD and explicit natural save intent through PersonalMemoryStore before model/API flow.
+- [Phase 02]: Use ChatPage runtime flag for temporary memory off/on and reset it on session switch instead of persisting metadata.
 
 ### Pending Todos
 
@@ -72,6 +75,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-17 09:01
-Stopped at: Completed 02-02-PLAN.md
-Resume file: .planning/phases/02-fondasi-persistent-memory/02-03-PLAN.md
+Last session: 2026-03-17 09:13
+Stopped at: Completed 02-03-PLAN.md
+Resume file: not set (next phase planning required)

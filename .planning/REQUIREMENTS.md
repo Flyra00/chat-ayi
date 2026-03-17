@@ -22,7 +22,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **MEM-01**: User can save durable memory items that are reused in future conversations
 - [x] **MEM-02**: User can view, edit, and delete memory items through explicit controls
-- [ ] **MEM-03**: User can disable memory for a temporary session mode without deleting stored memories
+- [x] **MEM-03**: User can disable memory for a temporary session mode without deleting stored memories
 
 ### Personal Knowledge Vault
 
@@ -83,7 +83,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SESS-03 | Phase 1 | Complete |
 | MEM-01 | Phase 2 | Complete |
 | MEM-02 | Phase 2 | Complete |
-| MEM-03 | Phase 2 | Pending |
+| MEM-03 | Phase 2 | Complete |
 | KNOW-01 | Phase 3 | Pending |
 | KNOW-02 | Phase 3 | Pending |
 | KNOW-03 | Phase 3 | Pending |

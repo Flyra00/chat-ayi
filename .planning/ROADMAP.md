@@ -51,12 +51,12 @@ Plans:
 
 **Requirements:** [MEM-01, MEM-02, MEM-03]
 
-**Plans:** 2/3 plans complete
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 02-01-PLAN.md — Bangun model memory personal terstruktur dan store JSON durable dengan retrieval sederhana top-5
 - [x] 02-02-PLAN.md — Integrasikan memory relevan ke PromptContextAssembler pada urutan context terkunci
-- [ ] 02-03-PLAN.md — Tambahkan explicit memory controls dan mode temporary-off per session
+- [x] 02-03-PLAN.md — Tambahkan explicit memory controls dan mode temporary-off per session
 
 ## Phase 3: Eksekusi Tool yang Aman
 
@@ -121,7 +121,7 @@ Plans:
 | Phase | Status | Catatan |
 |-------|--------|---------|
 | 1. Identitas Assistant dan Fondasi Session | Complete | 3/3 plans complete (2026-03-17) |
-| 2. Fondasi Persistent Memory | In Progress | 2/3 plans complete - runtime memory injection wired |
+| 2. Fondasi Persistent Memory | Complete | 3/3 plans complete (2026-03-17) |
 | 3. Eksekusi Tool yang Aman | Not started | Tool aman dengan konfirmasi |
 | 4. Personal Knowledge Vault | Not started | Retrieval ringan dan pemisahan data |
 | 5. Penyempurnaan Pengalaman Personal Assistant | Not started | Summary, suggestion, UX |
