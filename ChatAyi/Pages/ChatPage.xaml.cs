@@ -41,6 +41,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private string _thinkingMode = "off"; // off | on | verbose
     private bool _enableWebTools = true;
     private bool _enableRemember = true;
+    private bool _isMemoryTemporarilyOff;
     private bool _showCommandTips = true;
     private bool _structuredAnswers = true;
     private bool _isSettingsOpen;
@@ -1186,6 +1187,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     {
         _cts.Cancel();
         _cts = new CancellationTokenSource();
+        _isMemoryTemporarilyOff = false;
 
         _isSending = false;
 
@@ -1448,7 +1450,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         var rest = prompt.Length > 7 ? prompt.Substring(7).Trim() : string.Empty;
         if (string.IsNullOrWhiteSpace(rest))
         {
-            assistant.Content = "Usage: /memory list | /memory add [category] <content> | /memory update <id> [category] <content> | /memory delete <id>";
+            assistant.Content = "Usage: /memory list | /memory add [category] <content> | /memory update <id> [category] <content> | /memory delete <id> | /memory off | /memory on";
             return true;
         }
 
@@ -1563,8 +1565,21 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                             : $"Memory id '{memoryId}' tidak ditemukan.";
                         return true;
                     }
+                case "off":
+                    _isMemoryTemporarilyOff = true;
+                    assistant.Content = "Memory mode: OFF (sementara untuk sesi aktif).";
+                    return true;
+                case "on":
+                    _isMemoryTemporarilyOff = false;
+                    assistant.Content = "Memory mode: ON (sesi aktif).";
+                    return true;
+                case "status":
+                    assistant.Content = _isMemoryTemporarilyOff
+                        ? "Memory mode: OFF (temporary session mode)."
+                        : "Memory mode: ON (default session mode).";
+                    return true;
                 default:
-                    assistant.Content = "Unknown /memory command. Gunakan: list, add, update, delete.";
+                    assistant.Content = "Unknown /memory command. Gunakan: list, add, update, delete, off, on, status.";
                     return true;
             }
         }
@@ -2174,13 +2189,16 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             }
 
             IReadOnlyList<PersonalMemoryItem> relevantMemories = Array.Empty<PersonalMemoryItem>();
-            try
+            if (!_isMemoryTemporarilyOff)
             {
-                relevantMemories = await _personalMemoryStore.GetRelevantAsync(prompt, _cts.Token);
-            }
-            catch
-            {
-                relevantMemories = Array.Empty<PersonalMemoryItem>();
+                try
+                {
+                    relevantMemories = await _personalMemoryStore.GetRelevantAsync(prompt, _cts.Token);
+                }
+                catch
+                {
+                    relevantMemories = Array.Empty<PersonalMemoryItem>();
+                }
             }
 
             var chatThinking = GetThinkingInstruction();
