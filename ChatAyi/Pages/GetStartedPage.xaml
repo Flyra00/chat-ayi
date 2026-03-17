@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="ChatAyi.Pages.GetStartedPage"
+             Shell.NavBarIsVisible="False"
+             BackgroundColor="{StaticResource NvidiaDarker}">
+
+    <Grid x:Name="Root" Opacity="0" Padding="24" RowDefinitions="Auto,*,Auto" RowSpacing="18">
+
+        <!-- Header / badge -->
+        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+            <Border StrokeThickness="0" Padding="10,6" BackgroundColor="{StaticResource NvidiaGreen}" StrokeShape="RoundRectangle 999">
+                <Label Text="CHATAYI" TextColor="Black" FontFamily="OpenSansSemibold" FontSize="12" />
+            </Border>
+
+            <Label Grid.Column="1"
+                   Text="Cerberas API"
+                   TextColor="{StaticResource Gray300}"
+                   VerticalTextAlignment="Center"
+                   HorizontalTextAlignment="End"
+                   FontSize="12" />
+        </Grid>
+
+        <!-- Main content -->
+        <ScrollView Grid.Row="1">
+            <VerticalStackLayout Spacing="18">
+
+                <Border Stroke="{StaticResource Gray900}"
+                        StrokeThickness="1"
+                        StrokeShape="RoundRectangle 18"
+                        Padding="18"
+                        BackgroundColor="{StaticResource NvidiaDark}">
+
+                    <VerticalStackLayout Spacing="14">
+                        <Label Text="Chat langsung dengan AI"
+                               TextColor="White"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="34" />
+
+                        <Label Text="Mulai percakapan, dapat jawaban cepat, dan lanjutkan diskusi kapan saja."
+                               TextColor="{StaticResource Gray200}"
+                               FontSize="14" />
+
+                        <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
+                            <Grid ColumnDefinitions="18,*" ColumnSpacing="10">
+                                <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Start" Margin="0,6,0,0" />
+                                <Label Grid.Column="1" Text="Respon cepat dan relevan" TextColor="{StaticResource Gray100}" />
+                            </Grid>
+                            <Grid Grid.Row="1" ColumnDefinitions="18,*" ColumnSpacing="10">
+                                <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Start" Margin="0,6,0,0" />
+                                <Label Grid.Column="1" Text="Satu layar, fokus untuk chat" TextColor="{StaticResource Gray100}" />
+                            </Grid>
+                            <Grid Grid.Row="2" ColumnDefinitions="18,*" ColumnSpacing="10">
+                                <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Start" Margin="0,6,0,0" />
+                                <Label Grid.Column="1" Text="Siap integrasi Cerberas API" TextColor="{StaticResource Gray100}" />
+                            </Grid>
+                        </Grid>
+
+                    </VerticalStackLayout>
+                </Border>
+
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 18" Padding="14">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <GradientStop Color="#0d0d0d" Offset="0" />
+                            <GradientStop Color="#1a1a1a" Offset="1" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+
+                    <VerticalStackLayout Spacing="10">
+                        <Label Text="Tips" TextColor="{StaticResource Gray200}" FontFamily="OpenSansSemibold" FontSize="12" />
+                        <Label Text="Coba mulai dengan: &quot;Buatkan prompt untuk CV&quot; atau &quot;Jelaskan konsep async/await&quot;."
+                               TextColor="{StaticResource Gray100}" />
+                    </VerticalStackLayout>
+                </Border>
+
+            </VerticalStackLayout>
+        </ScrollView>
+
+        <!-- CTA -->
+        <VerticalStackLayout Grid.Row="2" Spacing="10">
+            <Button x:Name="StartButton" Text="Get Started" Clicked="OnGetStartedClicked" />
+            <Label Text="Dengan melanjutkan, aplikasi akan menyiapkan halaman chat."
+                   TextColor="{StaticResource Gray400}"
+                   FontSize="12"
+                   HorizontalTextAlignment="Center" />
+        </VerticalStackLayout>
+
+    </Grid>
+</ContentPage>

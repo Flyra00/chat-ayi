@@ -1,0 +1,32 @@
+## .NET / MAUI
+bin/
+obj/
+bin-alt/
+obj-alt/
+.vs/
+*.user
+*.suo
+*.pdb
+
+## Android build/signing artifacts
+*.apk
+*.aab
+*.apks
+*.keystore
+
+## Node
+node_modules/
+
+## OS / Editor
+.DS_Store
+Thumbs.db
+
+## Logs
+*.log
+
+## Runtime/session local data
+ChatAyi.Api/Sessions/*.jsonl
+ChatAyi.Api/workspace/memory/
+
+## Windows reserved filename accidentally created
+nul
