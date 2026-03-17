@@ -9,6 +9,7 @@ public sealed class PromptContextAssembler
         string SafetyAndBoundaries,
         AssistantPersona Persona,
         UserProfile UserProfile,
+        IReadOnlyList<PersonalMemoryItem> RelevantMemories,
         SessionContextSnapshot SessionContext,
         string UserMessage);
 
@@ -17,19 +18,57 @@ public sealed class PromptContextAssembler
         var safetyBlock = BuildSafetyAndBoundariesBlock(input.SafetyAndBoundaries);
         var personaBlock = BuildPersonaBlock(input.Persona);
         var profileBlock = BuildProfileBlock(input.UserProfile);
+        var memoryBlock = BuildMemoryBlock(input.RelevantMemories);
         var sessionBlock = BuildSessionContextBlock(input.SessionContext);
         var userMessage = string.IsNullOrWhiteSpace(input.UserMessage)
             ? string.Empty
             : input.UserMessage.Trim();
 
-        return new List<object>
+        var messages = new List<object>
         {
             new { role = "system", content = safetyBlock },
             new { role = "system", content = personaBlock },
             new { role = "system", content = profileBlock },
-            new { role = "system", content = sessionBlock },
-            new { role = "user", content = userMessage }
         };
+
+        if (!string.IsNullOrWhiteSpace(memoryBlock))
+        {
+            messages.Add(new { role = "system", content = memoryBlock });
+        }
+
+        messages.Add(new { role = "system", content = sessionBlock });
+        messages.Add(new { role = "user", content = userMessage });
+
+        return messages;
+    }
+
+    private static string BuildMemoryBlock(IReadOnlyList<PersonalMemoryItem> memories)
+    {
+        if (memories is null || memories.Count == 0)
+            return string.Empty;
+
+        var normalized = memories
+            .Where(x => x is not null && !x.IsDeleted)
+            .Select(x => x.Normalize())
+            .Where(x => !string.IsNullOrWhiteSpace(x.Content))
+            .ToList();
+
+        if (normalized.Count == 0)
+            return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("Personal memory (reference-only):");
+        sb.AppendLine("- Use these items only when relevant to the latest user request.");
+        sb.AppendLine("- If memory conflicts with the latest user message, the latest user message wins.");
+        sb.AppendLine("- Memory is context reference, not absolute fact.");
+        sb.AppendLine("- Relevant items:");
+
+        foreach (var item in normalized)
+        {
+            sb.AppendLine($"  - [{item.Category}] {item.Content} (id: {item.MemoryId})");
+        }
+
+        return sb.ToString().Trim();
     }
 
     private static string BuildSafetyAndBoundariesBlock(string safetyAndBoundaries)
@@ -55,7 +94,7 @@ public sealed class PromptContextAssembler
     {
         var p = (profile ?? UserProfile.Default).Normalize();
         var sb = new StringBuilder();
-        sb.AppendLine("User response preferences (format-only; do not change core reasoning):");
+        sb.AppendLine("User response preferences (format-only; never override persona character or tone):");
         sb.AppendLine("- Preferred language: " + MapLanguage(p.PreferredLanguage));
         sb.AppendLine("- Response length: " + MapLength(p.ResponseLengthPreference));
         sb.AppendLine("- Formality: " + MapFormality(p.FormalityPreference));
@@ -127,9 +166,9 @@ public sealed class PromptContextAssembler
     {
         return UserProfile.NormalizeFormality(formalityPreference) switch
         {
-            "casual" => "Use a casual, friendly tone.",
-            "formal" => "Use a formal and professional tone.",
-            _ => "Use a neutral tone."
+            "casual" => "Use casual wording/register while preserving persona voice.",
+            "formal" => "Use formal wording/register while preserving persona voice.",
+            _ => "Use neutral wording/register while preserving persona voice."
         };
     }
 }
