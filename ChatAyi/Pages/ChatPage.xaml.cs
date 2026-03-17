@@ -1440,6 +1440,240 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return true;
     }
 
+    private async Task<bool> TryHandleMemoryCommandAsync(string prompt, ChatMessage assistant, CancellationToken ct)
+    {
+        if (!prompt.StartsWith("/memory", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var rest = prompt.Length > 7 ? prompt.Substring(7).Trim() : string.Empty;
+        if (string.IsNullOrWhiteSpace(rest))
+        {
+            assistant.Content = "Usage: /memory list | /memory add [category] <content> | /memory update <id> [category] <content> | /memory delete <id>";
+            return true;
+        }
+
+        var parts = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        var action = parts[0].Trim().ToLowerInvariant();
+        var payload = parts.Length > 1 ? parts[1].Trim() : string.Empty;
+
+        try
+        {
+            switch (action)
+            {
+                case "list":
+                case "ls":
+                    {
+                        var items = await _personalMemoryStore.ListAsync(ct);
+                        if (items.Count == 0)
+                        {
+                            assistant.Content = "Memory list kosong.";
+                            return true;
+                        }
+
+                        var sb = new StringBuilder();
+                        sb.AppendLine($"Memory items: {items.Count}");
+                        foreach (var item in items.Take(20))
+                        {
+                            sb.Append("- ");
+                            sb.Append(item.MemoryId);
+                            sb.Append(" [");
+                            sb.Append(item.Category);
+                            sb.Append("] ");
+                            sb.AppendLine(item.Content);
+                        }
+
+                        if (items.Count > 20)
+                            sb.AppendLine($"... {items.Count - 20} item lainnya tidak ditampilkan");
+
+                        assistant.Content = sb.ToString().TrimEnd();
+                        return true;
+                    }
+                case "add":
+                case "save":
+                case "create":
+                    {
+                        if (string.IsNullOrWhiteSpace(payload))
+                        {
+                            assistant.Content = "Usage: /memory add [preference|active_project|important_info] <content>";
+                            return true;
+                        }
+
+                        var (category, content) = ParseMemoryCategoryAndContent(payload, defaultCategory: PersonalMemoryItem.CategoryPreference);
+                        if (string.IsNullOrWhiteSpace(content))
+                        {
+                            assistant.Content = "Error: content memory wajib diisi.";
+                            return true;
+                        }
+
+                        var created = await _personalMemoryStore.AddAsync(category, content, ct);
+                        assistant.Content = $"Memory saved: id={created.MemoryId} [{created.Category}] {created.Content}";
+                        return true;
+                    }
+                case "update":
+                case "edit":
+                    {
+                        if (string.IsNullOrWhiteSpace(payload))
+                        {
+                            assistant.Content = "Usage: /memory update <id> [preference|active_project|important_info] <content>";
+                            return true;
+                        }
+
+                        var updateParts = payload.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (updateParts.Length < 2)
+                        {
+                            assistant.Content = "Usage: /memory update <id> [preference|active_project|important_info] <content>";
+                            return true;
+                        }
+
+                        var memoryId = updateParts[0].Trim();
+                        var tail = updateParts[1].Trim();
+                        var existing = (await _personalMemoryStore.ListAsync(ct))
+                            .FirstOrDefault(x => string.Equals(x.MemoryId, memoryId, StringComparison.Ordinal));
+                        if (existing is null)
+                        {
+                            assistant.Content = $"Memory id '{memoryId}' tidak ditemukan.";
+                            return true;
+                        }
+
+                        var (category, content) = ParseMemoryCategoryAndContent(tail, existing.Category);
+                        if (string.IsNullOrWhiteSpace(content))
+                        {
+                            assistant.Content = "Error: content memory wajib diisi.";
+                            return true;
+                        }
+
+                        var updated = await _personalMemoryStore.UpdateAsync(memoryId, category, content, ct);
+                        assistant.Content = $"Memory updated: id={updated.MemoryId} [{updated.Category}] {updated.Content}";
+                        return true;
+                    }
+                case "delete":
+                case "del":
+                case "rm":
+                    {
+                        var memoryId = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(memoryId))
+                        {
+                            assistant.Content = "Usage: /memory delete <id>";
+                            return true;
+                        }
+
+                        var deleted = await _personalMemoryStore.DeleteAsync(memoryId, ct);
+                        assistant.Content = deleted
+                            ? $"Memory deleted: id={memoryId}"
+                            : $"Memory id '{memoryId}' tidak ditemukan.";
+                        return true;
+                    }
+                default:
+                    assistant.Content = "Unknown /memory command. Gunakan: list, add, update, delete.";
+                    return true;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or KeyNotFoundException)
+        {
+            assistant.Content = "Memory command gagal: " + ex.Message;
+            return true;
+        }
+    }
+
+    private async Task<bool> TryHandleNaturalMemorySaveIntentAsync(string prompt, ChatMessage assistant, CancellationToken ct)
+    {
+        if (!TryExtractExplicitMemorySaveText(prompt, out var content))
+            return false;
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            assistant.Content = "Siap, tapi kontennya belum ada. Contoh: 'ingat ini saya suka jawaban ringkas'.";
+            return true;
+        }
+
+        var category = PersonalMemoryItem.NormalizeCategory(content);
+        var created = await _personalMemoryStore.AddAsync(category, content, ct);
+        assistant.Content = $"Memory saved from explicit intent: id={created.MemoryId} [{created.Category}] {created.Content}";
+        return true;
+    }
+
+    private static (string Category, string Content) ParseMemoryCategoryAndContent(string payload, string defaultCategory)
+    {
+        var text = (payload ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return (defaultCategory, string.Empty);
+
+        var tokens = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+            return (defaultCategory, string.Empty);
+
+        if (!TryMapMemoryCategoryAlias(tokens[0], out var category))
+            return (defaultCategory, text);
+
+        var content = tokens.Length > 1 ? tokens[1].Trim() : string.Empty;
+        return (category, content);
+    }
+
+    private static bool TryExtractExplicitMemorySaveText(string prompt, out string content)
+    {
+        content = string.Empty;
+        if (string.IsNullOrWhiteSpace(prompt))
+            return false;
+
+        var text = prompt.Trim();
+        var lowered = text.ToLowerInvariant();
+        var triggers = new[] { "tolong simpan ini", "ingat ini" };
+
+        var bestIndex = -1;
+        var matchedTrigger = string.Empty;
+        foreach (var trigger in triggers)
+        {
+            var idx = lowered.IndexOf(trigger, StringComparison.Ordinal);
+            if (idx < 0)
+                continue;
+
+            if (bestIndex < 0 || idx < bestIndex)
+            {
+                bestIndex = idx;
+                matchedTrigger = trigger;
+            }
+        }
+
+        if (bestIndex < 0)
+            return false;
+
+        var start = bestIndex + matchedTrigger.Length;
+        content = start >= text.Length
+            ? string.Empty
+            : text[start..].TrimStart(':', ';', '-', ',', ' ').Trim();
+        return true;
+    }
+
+    private static bool TryMapMemoryCategoryAlias(string raw, out string category)
+    {
+        category = PersonalMemoryItem.CategoryPreference;
+        var token = (raw ?? string.Empty).Trim().ToLowerInvariant().Replace('-', '_');
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        switch (token)
+        {
+            case "preference":
+            case "preferensi":
+            case "pref":
+                category = PersonalMemoryItem.CategoryPreference;
+                return true;
+            case "active_project":
+            case "project":
+            case "proyek":
+                category = PersonalMemoryItem.CategoryActiveProject;
+                return true;
+            case "important_info":
+            case "important":
+            case "penting":
+            case "info":
+                category = PersonalMemoryItem.CategoryImportantInfo;
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private async Task<bool> EnsureApiKeyAsync(ChatApiClient.Provider provider)
     {
         try
@@ -1551,6 +1785,12 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
 
             if (TryHandleRetryCommand(prompt, assistant))
+                return;
+
+            if (await TryHandleMemoryCommandAsync(prompt, assistant, _cts.Token))
+                return;
+
+            if (await TryHandleNaturalMemorySaveIntentAsync(prompt, assistant, _cts.Token))
                 return;
 
             if (!await EnsureApiKeyAsync(CurrentProvider))
