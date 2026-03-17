@@ -30,7 +30,7 @@ Roadmap ini memecah transformasi ChatAyi menjadi 5 phase kecil, teruji, dan beru
 Plans:
 - [x] 01-01-PLAN.md — Bentuk kontrak typed persona/profile/session dan store lokal single-user
 - [x] 01-02-PLAN.md — Implementasi context assembler terpusat dan wiring lintas jalur chat
-- [ ] 01-03-PLAN.md — Implementasi UX create/switch/resume session dengan metadata terpersisten
+- [x] 01-03-PLAN.md — Implementasi UX create/switch/resume session dengan metadata terpersisten
 
 ## Phase 2: Fondasi Persistent Memory
 
@@ -111,7 +111,7 @@ Plans:
 
 | Phase | Status | Catatan |
 |-------|--------|---------|
-| 1. Identitas Assistant dan Fondasi Session | In Progress | 2/3 plan selesai (01-01, 01-02 complete) |
+| 1. Identitas Assistant dan Fondasi Session | Complete | 3/3 plan selesai (01-01, 01-02, 01-03 complete) |
 | 2. Fondasi Persistent Memory | Not started | Memory lifecycle dasar |
 | 3. Eksekusi Tool yang Aman | Not started | Tool aman dengan konfirmasi |
 | 4. Personal Knowledge Vault | Not started | Retrieval ringan dan pemisahan data |
