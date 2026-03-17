@@ -49,6 +49,15 @@ Plans:
 - Ingest dan retrieval dokumen knowledge
 - Optimasi UX lanjutan (summary/suggestion tingkat lanjut)
 
+**Requirements:** [MEM-01, MEM-02, MEM-03]
+
+**Plans:** 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Bangun model memory personal terstruktur dan store JSON durable dengan retrieval sederhana top-5
+- [ ] 02-02-PLAN.md — Integrasikan memory relevan ke PromptContextAssembler pada urutan context terkunci
+- [ ] 02-03-PLAN.md — Tambahkan explicit memory controls dan mode temporary-off per session
+
 ## Phase 3: Eksekusi Tool yang Aman
 
 **Tujuan:**
