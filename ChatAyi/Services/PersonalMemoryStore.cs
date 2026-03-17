@@ -7,6 +7,8 @@ namespace ChatAyi.Services;
 public sealed class PersonalMemoryStore
 {
     private const string MemoryFileName = "personal-memory.json";
+    private const int MaxRelevantItems = 5;
+    private const int MaxRelevantContentChars = 900;
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -41,12 +43,48 @@ public sealed class PersonalMemoryStore
         {
             var doc = await ReadDocumentInternalAsync(ct);
             var nowUtc = DateTimeOffset.UtcNow;
+            var normalizedCategory = PersonalMemoryItem.NormalizeCategory(category);
+            var hasExistingIdentity = doc.Items.Any(x => !x.IsDeleted && IsIdentityNameMemory(x));
+            var identityName = TryExtractIdentityName(trimmed, hasExistingIdentity);
+            var finalCategory = string.IsNullOrWhiteSpace(identityName)
+                ? normalizedCategory
+                : PersonalMemoryItem.CategoryPreference;
+            var finalContent = string.IsNullOrWhiteSpace(identityName)
+                ? trimmed
+                : $"nama saya {identityName}";
+            var normalizedContent = Normalize(finalContent);
+
+            var exact = doc.Items.FirstOrDefault(x =>
+                !x.IsDeleted
+                && string.Equals(x.Category, finalCategory, StringComparison.Ordinal)
+                && string.Equals(Normalize(x.Content), normalizedContent, StringComparison.Ordinal));
+            if (exact is not null)
+                return exact;
+
+            if (!string.IsNullOrWhiteSpace(identityName))
+            {
+                for (var i = 0; i < doc.Items.Count; i++)
+                {
+                    var item = doc.Items[i];
+                    if (item.IsDeleted)
+                        continue;
+
+                    if (!IsIdentityNameMemory(item))
+                        continue;
+
+                    doc.Items[i] = item with
+                    {
+                        IsDeleted = true,
+                        UpdatedUtc = nowUtc
+                    };
+                }
+            }
 
             var created = new PersonalMemoryItem
             {
                 MemoryId = Guid.NewGuid().ToString("N"),
-                Category = PersonalMemoryItem.NormalizeCategory(category),
-                Content = trimmed,
+                Category = finalCategory,
+                Content = finalContent,
                 CreatedUtc = nowUtc,
                 UpdatedUtc = nowUtc,
                 IsDeleted = false
@@ -55,6 +93,28 @@ public sealed class PersonalMemoryStore
             doc.Items.Add(created);
             await WriteDocumentInternalAsync(doc, ct);
             return created;
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
+    public async Task<string> GetLatestIdentityNameAsync(CancellationToken ct)
+    {
+        await _mutex.WaitAsync(ct);
+        try
+        {
+            var doc = await ReadDocumentInternalAsync(ct);
+            var latest = doc.Items
+                .Where(x => !x.IsDeleted && IsIdentityNameMemory(x))
+                .OrderByDescending(x => x.UpdatedUtc)
+                .FirstOrDefault();
+
+            if (latest is null)
+                return string.Empty;
+
+            return TryExtractIdentityName(latest.Content, true) ?? string.Empty;
         }
         finally
         {
@@ -133,6 +193,8 @@ public sealed class PersonalMemoryStore
         if (queryTokens.Count == 0)
             return Array.Empty<PersonalMemoryItem>();
 
+        var identityQuery = IsIdentityQuery(queryTokens);
+
         await _mutex.WaitAsync(ct);
         try
         {
@@ -142,16 +204,30 @@ public sealed class PersonalMemoryStore
                 .Select(x => new
                 {
                     Item = x,
-                    MatchCount = CountOverlap(BuildHaystack(x), queryTokens)
+                    Score = ComputeScore(x, queryTokens, identityQuery)
                 })
-                .Where(x => x.MatchCount >= 2)
-                .OrderByDescending(x => x.MatchCount)
+                .Where(x => x.Score >= 2)
+                .OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.Item.UpdatedUtc)
-                .Take(5)
                 .Select(x => x.Item)
                 .ToList();
 
-            return scored;
+            var capped = new List<PersonalMemoryItem>(MaxRelevantItems);
+            var totalChars = 0;
+            foreach (var item in scored)
+            {
+                if (capped.Count >= MaxRelevantItems)
+                    break;
+
+                var contentLength = item.Content?.Length ?? 0;
+                if (capped.Count > 0 && totalChars + contentLength > MaxRelevantContentChars)
+                    break;
+
+                capped.Add(item);
+                totalChars += contentLength;
+            }
+
+            return capped;
         }
         finally
         {
@@ -228,6 +304,69 @@ public sealed class PersonalMemoryStore
         return count;
     }
 
+    private static int ComputeScore(PersonalMemoryItem item, IReadOnlyCollection<string> queryTokens, bool identityQuery)
+    {
+        var overlap = CountOverlap(BuildHaystack(item), queryTokens);
+        if (!identityQuery)
+            return overlap;
+
+        return overlap + (LooksLikeIdentityMemory(item) ? 2 : 0);
+    }
+
+    private static bool IsIdentityQuery(IReadOnlyCollection<string> queryTokens)
+    {
+        if (queryTokens.Count == 0)
+            return false;
+
+        var set = queryTokens.ToHashSet(StringComparer.Ordinal);
+        var hasNameToken = set.Contains("nama") || set.Contains("name") || set.Contains("siapa") || set.Contains("panggil");
+        var hasSelfToken = set.Contains("saya") || set.Contains("aku") || set.Contains("gua") || set.Contains("gue") || set.Contains("gw");
+        return hasNameToken && hasSelfToken;
+    }
+
+    private static bool LooksLikeIdentityMemory(PersonalMemoryItem item)
+    {
+        if (!string.Equals(item.Category, PersonalMemoryItem.CategoryPreference, StringComparison.Ordinal))
+            return false;
+
+        var normalized = Normalize(item.Content);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        if (normalized.Contains("github", StringComparison.Ordinal)
+            || normalized.Contains("repo", StringComparison.Ordinal)
+            || normalized.Contains("project", StringComparison.Ordinal)
+            || normalized.Contains("http", StringComparison.Ordinal)
+            || normalized.Contains("www", StringComparison.Ordinal)
+            || normalized.Contains('@'))
+        {
+            return false;
+        }
+
+        if (normalized.Contains("nama", StringComparison.Ordinal)
+            || normalized.Contains("name", StringComparison.Ordinal)
+            || normalized.Contains("panggil", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var tokens = normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => x.Length >= 2)
+            .ToList();
+
+        if (tokens.Count < 2 || tokens.Count > 4)
+            return false;
+
+        foreach (var token in tokens)
+        {
+            if (token.Any(ch => ch < 'a' || ch > 'z'))
+                return false;
+        }
+
+        return true;
+    }
+
     private static string Normalize(string value)
     {
         var text = (value ?? string.Empty).ToLowerInvariant();
@@ -246,5 +385,60 @@ public sealed class PersonalMemoryStore
         }
 
         return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static bool IsIdentityNameMemory(PersonalMemoryItem item)
+        => !string.IsNullOrWhiteSpace(TryExtractIdentityName(item.Content, true));
+
+    private static string TryExtractIdentityName(string content, bool allowBareName)
+    {
+        var normalized = Normalize(content);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        var markers = new[]
+        {
+            "nama saya",
+            "nama gua",
+            "nama gue",
+            "nama aku",
+            "name saya",
+            "my name is",
+            "my name",
+            "nama ",
+            "name "
+        };
+
+        foreach (var marker in markers)
+        {
+            var idx = normalized.IndexOf(marker, StringComparison.Ordinal);
+            if (idx < 0)
+                continue;
+
+            var tail = normalized[(idx + marker.Length)..].Trim();
+            if (!string.IsNullOrWhiteSpace(tail))
+                return tail;
+        }
+
+        if (!allowBareName)
+            return string.Empty;
+
+        if (normalized.Contains("github", StringComparison.Ordinal)
+            || normalized.Contains("repo", StringComparison.Ordinal)
+            || normalized.Contains("http", StringComparison.Ordinal)
+            || normalized.Contains("www", StringComparison.Ordinal)
+            || normalized.Contains("project", StringComparison.Ordinal)
+            || normalized.Contains("kerja", StringComparison.Ordinal)
+            || normalized.Contains("developer", StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        var tokens = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length is < 1 or > 3)
+            return string.Empty;
+
+        return normalized;
+
     }
 }

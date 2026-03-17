@@ -1659,6 +1659,55 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return true;
     }
 
+    private async Task<bool> TryHandleIdentityQuestionAsync(string prompt, ChatMessage assistant, CancellationToken ct)
+    {
+        if (!IsIdentityNameQuestion(prompt))
+            return false;
+
+        var sessionId = await GetOrCreateActiveSessionIdAsync(ct);
+        var name = await _personalMemoryStore.GetLatestIdentityNameAsync(ct);
+
+        assistant.Content = string.IsNullOrWhiteSpace(name)
+            ? "Gua belum tahu nama lu."
+            : $"Nama lu {name}.";
+
+        await AppendSessionRecordAsync(sessionId, "user", prompt, string.Empty, prompt, ct);
+        await AppendSessionRecordAsync(sessionId, "assistant", assistant.Content, string.Empty, string.Empty, ct);
+        return true;
+    }
+
+    private static bool IsIdentityNameQuestion(string prompt)
+    {
+        var normalized = NormalizeSimple(prompt);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        var hasName = normalized.Contains("nama", StringComparison.Ordinal) || normalized.Contains("name", StringComparison.Ordinal);
+        var hasSelf = normalized.Contains("gua", StringComparison.Ordinal)
+            || normalized.Contains("gue", StringComparison.Ordinal)
+            || normalized.Contains("gw", StringComparison.Ordinal)
+            || normalized.Contains("aku", StringComparison.Ordinal)
+            || normalized.Contains("saya", StringComparison.Ordinal)
+            || normalized.Contains("my", StringComparison.Ordinal);
+
+        return hasName && hasSelf;
+    }
+
+    private static string NormalizeSimple(string value)
+    {
+        var text = (value ?? string.Empty).ToLowerInvariant();
+        var sb = new StringBuilder(text.Length);
+        foreach (var ch in text)
+        {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+                sb.Append(ch);
+            else
+                sb.Append(' ');
+        }
+
+        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     private static bool TryMapMemoryCategoryAlias(string raw, out string category)
     {
         category = PersonalMemoryItem.CategoryPreference;
@@ -1806,6 +1855,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
 
             if (await TryHandleNaturalMemorySaveIntentAsync(prompt, assistant, _cts.Token))
+                return;
+
+            if (await TryHandleIdentityQuestionAsync(prompt, assistant, _cts.Token))
                 return;
 
             if (!await EnsureApiKeyAsync(CurrentProvider))
@@ -2194,6 +2246,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 try
                 {
                     relevantMemories = await _personalMemoryStore.GetRelevantAsync(prompt, _cts.Token);
+                    Debug.WriteLine($"[Memory] session={sessionId} relevant={relevantMemories.Count} prompt='{prompt}'");
                 }
                 catch
                 {
@@ -2216,6 +2269,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 relevantMemories,
                 sessionSnapshot,
                 prompt));
+            Debug.WriteLine($"[Memory] injectedBlock={(relevantMemories.Count > 0 ? "yes" : "no")}");
             requestMessages = ApplyDcp(requestMessages.ToList(), provider);
 
             await AppendSessionRecordAsync(sessionId, "user", prompt, model, prompt, _cts.Token);
