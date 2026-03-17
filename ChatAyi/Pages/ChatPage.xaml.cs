@@ -1807,6 +1807,21 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return url.Length > 0;
     }
 
+    private static bool TryParseSearchCommand(string input, out string query)
+    {
+        query = string.Empty;
+        if (string.IsNullOrWhiteSpace(input))
+            return false;
+
+        var text = input.Trim();
+        if (!string.Equals(text, "/search", StringComparison.OrdinalIgnoreCase)
+            && !text.StartsWith("/search ", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        query = text.Length > 7 ? text.Substring(7).Trim() : string.Empty;
+        return true;
+    }
+
     public ObservableCollection<ChatMessage> Messages { get; }
 
     public bool IsSending => _isSending;
@@ -1972,7 +1987,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
             }
 
-            if (prompt.StartsWith("/search", StringComparison.OrdinalIgnoreCase))
+            if (TryParseSearchCommand(prompt, out var searchQuery))
             {
                 if (!EnableWebTools)
                 {
@@ -1986,19 +2001,20 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     return;
                 }
 
-                var q = prompt.Length > 7 ? prompt.Substring(7).Trim() : string.Empty;
-                if (string.IsNullOrWhiteSpace(q))
+                if (string.IsNullOrWhiteSpace(searchQuery))
                 {
                     assistant.Content = "Usage: /search <query>";
                     return;
                 }
+
+                Debug.WriteLine($"[Routing] /search command accepted. query='{searchQuery}'");
 
                 assistant.Content = "Searching...";
 
                 List<FreeSearchClient.SearchResult> results;
                 try
                 {
-                    results = await _search.SearchAsync(q, maxResults: 5, _cts.Token);
+                    results = await _search.SearchAsync(searchQuery, maxResults: 5, _cts.Token);
                 }
                 catch (Exception ex)
                 {
@@ -2051,7 +2067,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 }
 
                 var searchModel = model;
-                var searchMemoryContext = await _memory.GetContextAsync(q, _cts.Token);
+                var searchMemoryContext = await _memory.GetContextAsync(searchQuery, _cts.Token);
                 var searchThinking = GetThinkingInstruction();
                 var searchFormat = GetStrictSearchTemplateInstruction();
                 var searchSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
@@ -2069,7 +2085,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchFormat,
                     searchGroundingRules,
                     string.IsNullOrWhiteSpace(searchMemoryContext) ? null : "Local memory (if relevant):\n\n" + searchMemoryContext,
-                    "Search results (SearXNG):\n\n" + sourcesBlock.ToString().Trim(),
+                    "Search results (hybrid providers):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 
                 var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
@@ -2078,10 +2094,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     profile,
                     null,
                     searchSnapshot,
-                    q));
+                    searchQuery));
                 searchRequestMessages = ApplyDcp(searchRequestMessages, provider);
 
-                await AppendSessionRecordAsync(sessionId, "user", "/search " + q, searchModel, q, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "user", "/search " + searchQuery, searchModel, searchQuery, _cts.Token);
 
                 assistant.Content = string.Empty;
 

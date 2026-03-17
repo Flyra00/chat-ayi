@@ -7,6 +7,7 @@ namespace ChatAyi.Services;
 
 public sealed class BrowseClient
 {
+    private const int MaxBrowseChars = 20000;
     private readonly HttpClient _http;
 
     public BrowseClient(HttpClient http)
@@ -20,6 +21,10 @@ public sealed class BrowseClient
     {
         if (!TryNormalizeUrl(url, out var uri))
             throw new ArgumentException("Invalid URL");
+
+        var jinaPage = await TryFetchWithJinaAsync(uri, ct);
+        if (jinaPage is not null)
+            return jinaPage;
 
         using var req = new HttpRequestMessage(HttpMethod.Get, uri);
         req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
@@ -54,18 +59,61 @@ public sealed class BrowseClient
         {
             var title = ExtractTitle(raw);
             var text = HtmlToText(raw);
-            text = Truncate(text, 12000);
+            if (text.Length < 80)
+                throw new InvalidOperationException("No readable page content extracted.");
+
+            text = Truncate(text, MaxBrowseChars);
             return new BrowsePage(finalUrl, title, text);
         }
 
         if (contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase) || contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
         {
             var text = NormalizeWhitespace(raw);
-            text = Truncate(text, 12000);
+            if (text.Length < 40)
+                throw new InvalidOperationException("Content is empty or unsupported for grounding.");
+
+            text = Truncate(text, MaxBrowseChars);
             return new BrowsePage(finalUrl, string.Empty, text);
         }
 
         throw new InvalidOperationException($"Unsupported content-type: {contentType}");
+    }
+
+    private async Task<BrowsePage> TryFetchWithJinaAsync(Uri originalUri, CancellationToken ct)
+    {
+        var jinaUrl = "https://r.jina.ai/" + originalUri.AbsoluteUri;
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, jinaUrl);
+        req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
+        req.Headers.TryAddWithoutValidation("Accept", "text/plain, text/markdown;q=0.9, */*;q=0.8");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+        }
+        catch
+        {
+            return null;
+        }
+
+        using (resp)
+        {
+            if (!resp.IsSuccessStatusCode)
+                return null;
+
+            var bytes = await ReadWithLimitAsync(resp, limitBytes: 1_000_000, timeoutCts.Token);
+            var raw = Encoding.UTF8.GetString(bytes);
+            var text = NormalizeWhitespace(raw);
+            if (!IsReadableEnough(text, minChars: 80))
+                return null;
+
+            var title = ExtractReadableTitle(text);
+            return new BrowsePage(originalUri.ToString(), title, Truncate(text, MaxBrowseChars));
+        }
     }
 
     private static bool TryNormalizeUrl(string raw, out Uri uri)
@@ -134,6 +182,8 @@ public sealed class BrowseClient
     {
         var s = html ?? string.Empty;
 
+        s = Regex.Replace(s, "<(script|style|noscript|svg|canvas|iframe)[\\s\\S]*?</\\1>", " ", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, "<(nav|header|footer|aside|form)[\\s\\S]*?</\\1>", " ", RegexOptions.IgnoreCase);
         s = Regex.Replace(s, "<script[\\s\\S]*?</script>", " ", RegexOptions.IgnoreCase);
         s = Regex.Replace(s, "<style[\\s\\S]*?</style>", " ", RegexOptions.IgnoreCase);
         s = Regex.Replace(s, "<!--([\\s\\S]*?)-->", " ");
@@ -173,10 +223,48 @@ public sealed class BrowseClient
         return sb.ToString().Trim();
     }
 
+    private static bool IsReadableEnough(string text, int minChars)
+    {
+        var value = (text ?? string.Empty).Trim();
+        if (value.Length < minChars)
+            return false;
+
+        var words = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return words.Length >= 12;
+    }
+
+    private static string ExtractReadableTitle(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var line in lines)
+        {
+            var candidate = line.Trim();
+            if (candidate.Length < 6 || candidate.Length > 120)
+                continue;
+            if (candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (candidate.StartsWith("Warning:", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return candidate;
+        }
+
+        return string.Empty;
+    }
+
     private static string Truncate(string s, int maxChars)
     {
         s ??= string.Empty;
         if (s.Length <= maxChars) return s;
-        return s.Substring(0, maxChars) + "\n\n[...truncated...]";
+
+        var cut = s.LastIndexOf('\n', Math.Min(maxChars, s.Length - 1));
+        if (cut < maxChars / 2)
+            cut = maxChars;
+
+        return s.Substring(0, cut).TrimEnd() + "\n\n[...truncated...]";
     }
 }

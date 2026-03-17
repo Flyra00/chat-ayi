@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace ChatAyi.Services;
 
@@ -42,6 +43,21 @@ public sealed class FreeSearchClient
         }
 
         // 2) DuckDuckGo fallback/fill (existing provider)
+        if (combined.Count < 3 || HasLowDomainVariety(combined, minDistinctDomains: 3))
+        {
+            try
+            {
+                var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
+                jina = FilterResults(jina, maxResults);
+                AppendMissingDiverse(combined, jina, maxResults);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        // 3) DuckDuckGo fallback/fill (existing provider)
         if (_ddgFallback is not null && combined.Count < maxResults)
         {
             try
@@ -58,7 +74,7 @@ public sealed class FreeSearchClient
             }
         }
 
-        // 3) GitHub repositories search (unauth, rate-limited)
+        // 4) GitHub repositories search (unauth, rate-limited)
         if (combined.Count < maxResults)
         {
             try
@@ -73,7 +89,7 @@ public sealed class FreeSearchClient
             }
         }
 
-        // 4) Wikipedia OpenSearch
+        // 5) Wikipedia OpenSearch
         if (combined.Count < maxResults)
         {
             try
@@ -92,6 +108,64 @@ public sealed class FreeSearchClient
             return combined.Take(maxResults).ToList();
 
         return new List<SearchResult>();
+    }
+
+    private async Task<List<SearchResult>> TrySearchWithJinaAsync(string query, int maxResults, CancellationToken ct)
+    {
+        var url = "https://s.jina.ai/?q=" + Uri.EscapeDataString(query);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
+        req.Headers.TryAddWithoutValidation("Accept", "text/plain, text/markdown;q=0.9, */*;q=0.8");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!resp.IsSuccessStatusCode)
+            return new List<SearchResult>();
+
+        var raw = await resp.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrWhiteSpace(raw))
+            return new List<SearchResult>();
+
+        // Expected commonly in markdown-like format: [Title](https://...)
+        var outList = new List<SearchResult>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var linkMatches = Regex.Matches(raw, "\\[(?<title>[^\\]]{2,200})\\]\\((?<url>https?://[^)\\s]+)\\)", RegexOptions.IgnoreCase);
+        foreach (Match match in linkMatches)
+        {
+            var title = (match.Groups["title"].Value ?? string.Empty).Trim();
+            var link = (match.Groups["url"].Value ?? string.Empty).Trim();
+            if (link.Length == 0 || !seen.Add(link))
+                continue;
+
+            outList.Add(new SearchResult(title.Length > 0 ? title : link, link, string.Empty, "jina"));
+            if (outList.Count >= maxResults)
+                break;
+        }
+
+        // Fallback parser for plain-text list lines containing URLs.
+        if (outList.Count < Math.Min(3, maxResults))
+        {
+            foreach (var line in raw.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length < 12)
+                    continue;
+
+                var m = Regex.Match(trimmed, "(?<url>https?://\\S+)", RegexOptions.IgnoreCase);
+                if (!m.Success)
+                    continue;
+
+                var link = (m.Groups["url"].Value ?? string.Empty).Trim().TrimEnd(')', ']', ',', '.');
+                if (link.Length == 0 || !seen.Add(link))
+                    continue;
+
+                var title = Regex.Replace(trimmed.Replace(link, " "), "^[-*\\d\\.)\\s]+", string.Empty).Trim();
+                outList.Add(new SearchResult(title.Length > 0 ? title : link, link, string.Empty, "jina"));
+                if (outList.Count >= maxResults)
+                    break;
+            }
+        }
+
+        return outList;
     }
 
     private async Task<List<SearchResult>> SearchGitHubAsync(string query, int maxResults, CancellationToken ct)
@@ -263,5 +337,28 @@ public sealed class FreeSearchClient
         if (value.StartsWith("www.", StringComparison.Ordinal))
             value = value.Substring(4);
         return value;
+    }
+
+    private static bool HasLowDomainVariety(IReadOnlyCollection<SearchResult> items, int minDistinctDomains)
+    {
+        var domains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            if (item is null || string.IsNullOrWhiteSpace(item.Url))
+                continue;
+
+            if (!Uri.TryCreate(item.Url, UriKind.Absolute, out var uri))
+                continue;
+
+            var domain = NormalizeDomainKey(uri.Host);
+            if (domain.Length == 0)
+                continue;
+
+            domains.Add(domain);
+            if (domains.Count >= minDistinctDomains)
+                return false;
+        }
+
+        return true;
     }
 }
