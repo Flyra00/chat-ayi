@@ -72,7 +72,28 @@ Each task was committed atomically:
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
+
+**1. [Rule 3 - Blocking] `state advance-plan` and `state update-progress` failed to parse current `STATE.md` format**
+- **Found during:** post-task state update
+- **Issue:** gsd-tools could not parse current plan/progress/session fields in existing markdown layout, so automated state position updates did not apply.
+- **Fix:** Updated `.planning/STATE.md` manually to reflect 01-03 completion, refreshed progress/metrics/session stop point, and preserved existing structure.
+- **Files modified:** `.planning/STATE.md`
+- **Verification:** Re-read file and confirmed current plan, progress, and session stop marker now match 01-03 completion.
+- **Committed in:** `ef76c3c`
+
+**2. [Rule 3 - Blocking] `gsd-tools commit` command failed to parse quoted commit message**
+- **Found during:** final metadata commit
+- **Issue:** tool interpreted commit message tokens as file pathspecs and aborted.
+- **Fix:** Performed equivalent final docs commit manually with explicit pathspec and repository author environment variables (no git config changes).
+- **Files modified:** `.planning/phases/01-identitas-assistant-dan-fondasi-session/01-03-SUMMARY.md`, `.planning/STATE.md`, `.planning/ROADMAP.md`
+- **Verification:** `git log -2 --oneline` shows both task commit and final docs commit.
+- **Committed in:** `ef76c3c`
+
+---
+
+**Total deviations:** 2 auto-fixed (2 blocking)
+**Impact on plan:** Deviations were execution tooling/workflow issues only; feature scope and functional outcomes remained unchanged.
 
 ## Issues Encountered
 - Initial task commit failed because git author identity was missing in local environment; resolved by using repository author identity through per-command git environment variables without changing git config.
