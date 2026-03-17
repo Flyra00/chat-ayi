@@ -259,6 +259,7 @@ public sealed class FreeSearchClient
             if (url.Length == 0) continue;
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) continue;
             if (uri.Scheme is not ("http" or "https")) continue;
+            if (IsLowQualitySource(uri, title, snippet, source)) continue;
 
             var urlKey = NormalizeUrlKey(uri);
             if (!seenUrls.Add(urlKey)) continue;
@@ -337,6 +338,117 @@ public sealed class FreeSearchClient
         if (value.StartsWith("www.", StringComparison.Ordinal))
             value = value.Substring(4);
         return value;
+    }
+
+    private static bool IsLowQualitySource(Uri uri, string title, string snippet, string source)
+    {
+        var host = NormalizeDomainKey(uri.Host);
+        var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
+
+        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+            && IsLikelyLowValueGithubUrl(path))
+        {
+            return true;
+        }
+
+        if (HasLowValuePathToken(path) && !LooksLikeReferencePage(uri, title, snippet, source))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsLikelyLowValueGithubUrl(string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2)
+            return true;
+
+        // owner/repo is allowed.
+        if (segments.Length == 2)
+            return false;
+
+        var section = segments[2];
+        if (section is "wiki" or "releases")
+            return false;
+
+        if (section is "blob" or "tree")
+        {
+            if (segments.Length < 5)
+                return true;
+
+            var branch = segments[3];
+            var node = segments[4];
+            if (branch is "main" or "master")
+            {
+                if (node.Equals("readme.md", StringComparison.OrdinalIgnoreCase)
+                    || node.Equals("docs", StringComparison.OrdinalIgnoreCase)
+                    || node.Equals("doc", StringComparison.OrdinalIgnoreCase)
+                    || node.Equals("wiki", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // Other deep GitHub pages are usually low-value grounding sources.
+        return true;
+    }
+
+    private static bool HasLowValuePathToken(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        var lowValueTokens = new[]
+        {
+            "assignment", "tugas", "praktikum", "homework", "uts", "uas",
+            "kuliah", "dump", "tmp", "temp", "sandbox", "demo", "test"
+        };
+
+        foreach (var token in lowValueTokens)
+        {
+            if (path.Contains('/' + token, StringComparison.Ordinal)
+                || path.Contains(token + '-', StringComparison.Ordinal)
+                || path.Contains('-' + token, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeReferencePage(Uri uri, string title, string snippet, string source)
+    {
+        var host = NormalizeDomainKey(uri.Host);
+        var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
+        var text = ((title ?? string.Empty) + " " + (snippet ?? string.Empty) + " " + (source ?? string.Empty)).ToLowerInvariant();
+
+        if (host.Contains("docs.", StringComparison.Ordinal)
+            || host.Contains("wikipedia.org", StringComparison.Ordinal)
+            || host.Contains("developer.", StringComparison.Ordinal)
+            || host.Contains("readthedocs", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (path.Contains("/docs", StringComparison.Ordinal)
+            || path.Contains("/documentation", StringComparison.Ordinal)
+            || path.Contains("/wiki", StringComparison.Ordinal)
+            || path.Contains("/reference", StringComparison.Ordinal)
+            || path.Contains("/guide", StringComparison.Ordinal)
+            || path.Contains("/api", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return text.Contains("official", StringComparison.Ordinal)
+            || text.Contains("documentation", StringComparison.Ordinal)
+            || text.Contains("reference", StringComparison.Ordinal)
+            || text.Contains("guide", StringComparison.Ordinal)
+            || text.Contains("api", StringComparison.Ordinal);
     }
 
     private static bool HasLowDomainVariety(IReadOnlyCollection<SearchResult> items, int minDistinctDomains)

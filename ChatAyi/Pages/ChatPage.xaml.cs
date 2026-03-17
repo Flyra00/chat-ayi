@@ -1679,19 +1679,18 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
     private static bool IsIdentityNameQuestion(string prompt)
     {
-        var normalized = NormalizeSimple(prompt);
+        var raw = (prompt ?? string.Empty).Trim();
+        if (raw.Length == 0 || raw.Length > 50)
+            return false;
+
+        var normalized = NormalizeSimple(raw);
         if (string.IsNullOrWhiteSpace(normalized))
             return false;
 
-        var hasName = normalized.Contains("nama", StringComparison.Ordinal) || normalized.Contains("name", StringComparison.Ordinal);
-        var hasSelf = normalized.Contains("gua", StringComparison.Ordinal)
-            || normalized.Contains("gue", StringComparison.Ordinal)
-            || normalized.Contains("gw", StringComparison.Ordinal)
-            || normalized.Contains("aku", StringComparison.Ordinal)
-            || normalized.Contains("saya", StringComparison.Ordinal)
-            || normalized.Contains("my", StringComparison.Ordinal);
-
-        return hasName && hasSelf;
+        return normalized is "nama gua siapa"
+            or "siapa nama gua"
+            or "nama saya siapa"
+            or "siapa nama saya";
     }
 
     private static string NormalizeSimple(string value)
@@ -2078,7 +2077,15 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).\n" +
                     "- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.\n" +
                     "- Voice wajib tetap ChatAyi: Bahasa Indonesia gaul, gua/lu, santai, blak-blakan, sedikit nyentil tapi tetap membantu.\n" +
-                    "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.";
+                    "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.\n\n" +
+                    "[STRICT OUTPUT RULES - IDENTITY SAFETY]\n" +
+                    "- Kamu adalah ChatAyi, bukan subjek yang dibahas.\n" +
+                    "- Dilarang menjawab seolah-olah kamu adalah orang yang sedang dibahas.\n" +
+                    "- Semua jawaban HARUS menggunakan sudut pandang pihak ketiga.\n" +
+                    "- BENAR: 'Windah Basudara adalah...'\n" +
+                    "- SALAH: 'Gua adalah...', 'Saya adalah...'\n" +
+                    "- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.\n" +
+                    "- Pelanggaran aturan ini dianggap jawaban salah.";
                 var searchSafety = BuildSafetyAndBoundariesInstruction(
                     "Use only provided web search evidence; keep ChatAyi persona voice (gua/lu, santai, blak-blakan); cite sources like [1], [2] for every factual claim.",
                     searchThinking,
