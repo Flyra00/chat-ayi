@@ -29,6 +29,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private readonly FreeSearchClient _search;
     private readonly BrowseClient _browse;
     private readonly LocalMemoryStore _memory;
+    private readonly PersonalMemoryStore _personalMemoryStore;
     private readonly LocalSessionStore _sessions;
     private readonly SessionCatalogStore _sessionCatalog;
     private readonly PersonaProfileStore _personaProfileStore;
@@ -546,6 +547,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         _browse = services?.GetService<BrowseClient>()
                   ?? new BrowseClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
         _memory = services?.GetService<LocalMemoryStore>() ?? new LocalMemoryStore();
+        _personalMemoryStore = services?.GetService<PersonalMemoryStore>() ?? new PersonalMemoryStore();
         _sessions = services?.GetService<LocalSessionStore>() ?? new LocalSessionStore();
         _sessionCatalog = services?.GetService<SessionCatalogStore>() ?? new SessionCatalogStore();
         _personaProfileStore = services?.GetService<PersonaProfileStore>() ?? new PersonaProfileStore();
@@ -998,8 +1000,40 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         sb.AppendLine("Format jawaban harus rapi dan ringkas:");
         sb.AppendLine("- Gunakan heading singkat: 'Jawaban', 'Poin Penting'.");
         if (hasSources)
-            sb.AppendLine("- Jika memakai sumber yang diberikan, cantumkan sitasi [1], [2], dst dan akhiri dengan bagian 'Sumber'.");
+            sb.AppendLine("- Untuk mode bersumber, WAJIB pakai format ini secara berurutan: [FAKTA], [INFERENSI], Sumber:.");
+        if (hasSources)
+            sb.AppendLine("- [FAKTA] hanya berisi klaim yang didukung sumber dan setiap klaim wajib punya sitasi [1], [2], dst.");
+        if (hasSources)
+            sb.AppendLine("- [INFERENSI] harus dipisah dari fakta. Jika tidak ada inferensi, tulis persis: [INFERENSI] Tidak ada inferensi tambahan.");
+        if (hasSources)
+            sb.AppendLine("- Bagian penutup wajib: 'Sumber:' lalu daftar minimal [1] ... sesuai data yang dipakai.");
         sb.AppendLine("- Jangan mengarang repo/tautan/fakta. Jika tidak yakin, tulis 'Saya belum yakin' dan minta link / gunakan /browse.");
+        return sb.ToString().Trim();
+    }
+
+    private static string GetStrictSearchTemplateInstruction()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("KONSTRAINT OUTPUT /search (WAJIB):");
+        sb.AppendLine("- Output HARUS berupa bullet template tetap, bukan paragraf bebas.");
+        sb.AppendLine("- Dilarang gaya ensiklopedik/rangkuman artikel panjang.");
+        sb.AppendLine("- Voice tetap ChatAyi (gaya gua/lu, santai, blak-blakan) di isi bullet, bukan gimmick pembuka.");
+        sb.AppendLine("- Semua klaim di [FAKTA] wajib bersitasi [n] yang cocok dengan bagian Sumber.");
+        sb.AppendLine("- Jika data sumber lemah/kurang/konflik, tulis keterbatasan data di [FAKTA].");
+        sb.AppendLine("- Jika inferensi tidak ada, wajib tulis tepat: '- Tidak ada inferensi tambahan.' di [INFERENSI].");
+        sb.AppendLine("- Sebelum final, validasi output tetap mengikuti template ini.");
+        sb.AppendLine();
+        sb.AppendLine("Template wajib:");
+        sb.AppendLine("[FAKTA]");
+        sb.AppendLine("- <klaim faktual bersitasi [1]> ");
+        sb.AppendLine("- <klaim faktual bersitasi [2]> ");
+        sb.AppendLine("[INFERENSI]");
+        sb.AppendLine("- <inferensi berbasis fakta>  ATAU  - Tidak ada inferensi tambahan.");
+        sb.AppendLine("Sumber:");
+        sb.AppendLine("[1] <url/sumber>");
+        sb.AppendLine("[2] <url/sumber>");
+        sb.AppendLine();
+        sb.AppendLine("Jika tidak ada sumber valid sama sekali, tetap pakai template di atas dan jelaskan keterbatasan pada [FAKTA].");
         return sb.ToString().Trim();
     }
 
@@ -1711,12 +1745,21 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var searchModel = model;
                 var searchMemoryContext = await _memory.GetContextAsync(q, _cts.Token);
                 var searchThinking = GetThinkingInstruction();
-                var searchFormat = GetResponseFormatInstruction(hasSources: true);
+                var searchFormat = GetStrictSearchTemplateInstruction();
                 var searchSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+                var searchGroundingRules =
+                    "Grounding rules (search mode):\n" +
+                    "- Jawab hanya dari sumber yang diberikan di bawah (search results + browsed excerpts).\n" +
+                    "- Jangan pakai pengetahuan umum/model jika tidak didukung sumber.\n" +
+                    "- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).\n" +
+                    "- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.\n" +
+                    "- Voice wajib tetap ChatAyi: Bahasa Indonesia gaul, gua/lu, santai, blak-blakan, sedikit nyentil tapi tetap membantu.\n" +
+                    "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.";
                 var searchSafety = BuildSafetyAndBoundariesInstruction(
-                    "Use provided web search evidence when relevant and cite sources like [1], [2].",
+                    "Use only provided web search evidence; keep ChatAyi persona voice (gua/lu, santai, blak-blakan); cite sources like [1], [2] for every factual claim.",
                     searchThinking,
                     searchFormat,
+                    searchGroundingRules,
                     string.IsNullOrWhiteSpace(searchMemoryContext) ? null : "Local memory (if relevant):\n\n" + searchMemoryContext,
                     "Search results (DuckDuckGo Instant Answer):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
@@ -1725,6 +1768,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchSafety,
                     persona,
                     profile,
+                    null,
                     searchSnapshot,
                     q));
                 searchRequestMessages = ApplyDcp(searchRequestMessages, provider);
@@ -1835,6 +1879,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     browseSafety,
                     persona,
                     profile,
+                    null,
                     browseSnapshot,
                     q));
                 browseRequestMessages = ApplyDcp(browseRequestMessages, provider);
@@ -1888,21 +1933,29 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
             }
 
-            var memoryContext = await _memory.GetContextAsync(prompt, _cts.Token);
+            IReadOnlyList<PersonalMemoryItem> relevantMemories = Array.Empty<PersonalMemoryItem>();
+            try
+            {
+                relevantMemories = await _personalMemoryStore.GetRelevantAsync(prompt, _cts.Token);
+            }
+            catch
+            {
+                relevantMemories = Array.Empty<PersonalMemoryItem>();
+            }
+
             var chatThinking = GetThinkingInstruction();
             var chatFormat = GetResponseFormatInstruction(hasSources: false);
-            memoryContext = TrimForContext(memoryContext, provider == ChatApiClient.Provider.NvidiaIntegrate ? 1800 : 3500);
             var sessionSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
             var chatSafety = BuildSafetyAndBoundariesInstruction(
-                "Use local memory excerpts only when relevant. If irrelevant, ignore them.",
+                "Use structured personal memory references only when relevant. If memory conflicts with the latest user message, follow the latest user message.",
                 chatThinking,
-                chatFormat,
-                string.IsNullOrWhiteSpace(memoryContext) ? null : "Local memory (if relevant):\n\n" + memoryContext);
+                chatFormat);
 
             var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
                 chatSafety,
                 persona,
                 profile,
+                relevantMemories,
                 sessionSnapshot,
                 prompt));
             requestMessages = ApplyDcp(requestMessages.ToList(), provider);
