@@ -87,6 +87,7 @@ public sealed class PromptContextAssembler
         sb.AppendLine("- Role statement: " + p.RoleStatement);
         sb.AppendLine("- Tone: " + p.Tone);
         sb.AppendLine("- Response style directives: " + p.ResponseStyleDirectives);
+        sb.AppendLine("- Voice lock: gunakan Bahasa Indonesia santai dengan 'gua/lu' secara konsisten; jangan campur 'kamu/Anda' kecuali user minta eksplisit.");
         return sb.ToString().Trim();
     }
 
@@ -166,9 +167,9 @@ public sealed class PromptContextAssembler
     {
         return UserProfile.NormalizeFormality(formalityPreference) switch
         {
-            "casual" => "Use casual wording/register while preserving persona voice.",
-            "formal" => "Use formal wording/register while preserving persona voice.",
-            _ => "Use neutral wording/register while preserving persona voice."
+            "casual" => "Utamakan gaya santai konsisten dengan voice gua/lu.",
+            "formal" => "Jika user minta formal, tetap jaga voice gua/lu kecuali user minta gaya lain secara eksplisit.",
+            _ => "Jaga voice tetap konsisten gua/lu; hindari gaya netral yang mengubah karakter ChatAyi."
         };
     }
 }

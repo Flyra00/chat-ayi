@@ -1009,8 +1009,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             sb.AppendLine("- [INFERENSI] harus dipisah dari fakta. Jika tidak ada inferensi, tulis persis: [INFERENSI] Tidak ada inferensi tambahan.");
         if (hasSources)
             sb.AppendLine("- Bagian penutup wajib: 'Sumber:' lalu daftar minimal [1] ... sesuai data yang dipakai.");
-        sb.AppendLine("- Jangan mengarang repo/tautan/fakta. Jika tidak yakin, tulis 'Saya belum yakin' dan minta link / gunakan /browse.");
+        sb.AppendLine("- Jangan mengarang repo/tautan/fakta. Jika tidak yakin, tulis 'Gua belum yakin' dan minta link / gunakan /browse.");
         return sb.ToString().Trim();
+    }
+
+    private static string GetUnifiedVoiceInstruction()
+    {
+        return "Kontrak voice ChatAyi: selalu Bahasa Indonesia santai dengan pronomina 'gua/lu' secara konsisten. " +
+               "Jangan campur ke 'kamu/Anda' atau gaya netral/formal kecuali user minta eksplisit.";
     }
 
     private static string GetStrictSearchTemplateInstruction()
@@ -1045,6 +1051,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         sb.AppendLine("KONSTRAINT OUTPUT /browse (WAJIB):");
         sb.AppendLine("- Jawaban akhir HARUS Bahasa Indonesia.");
         sb.AppendLine("- Ringkas, jelas, dan langsung ke inti (hindari paragraf panjang).");
+        sb.AppendLine("- Maksimal total 6 bullet (gabungan semua section).");
         sb.AppendLine("- Jangan copy-tempel kalimat panjang dari halaman sumber.");
         sb.AppendLine("- Jika sumber berbahasa Inggris, parafrasekan ke Bahasa Indonesia.");
         sb.AppendLine("- Jika konten tidak cukup jelas/noisy, akui keterbatasan data secara jujur.");
@@ -1256,11 +1263,27 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
     private async Task<SessionContextSnapshot> BuildSessionContextSnapshotForNormalChatAsync(string sessionId, CancellationToken ct)
     {
+        return await BuildSessionContextSnapshotWithoutCommandsAsync(sessionId, ct, "normal-chat");
+    }
+
+    private async Task<SessionContextSnapshot> BuildSessionContextSnapshotForSearchAsync(string sessionId, CancellationToken ct)
+    {
+        return await BuildSessionContextSnapshotWithoutCommandsAsync(sessionId, ct, "search");
+    }
+
+    private async Task<SessionContextSnapshot> BuildSessionContextSnapshotForBrowseAsync(string sessionId, CancellationToken ct)
+    {
+        return await BuildSessionContextSnapshotWithoutCommandsAsync(sessionId, ct, "browse");
+    }
+
+    private async Task<SessionContextSnapshot> BuildSessionContextSnapshotWithoutCommandsAsync(string sessionId, CancellationToken ct, string branch)
+    {
         try
         {
             var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
             var recent = BuildRecentNormalChatTurns(transcript, maxTurns: 6);
             var summary = TryExtractSummaryBullets(transcript);
+            Debug.WriteLine($"[ContextFilter] branch={branch} recent={recent.Count}");
             return SessionContextSnapshot.Create(sessionId, recent, summary);
         }
         catch
@@ -1329,9 +1352,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private static bool IsCommandMessage(string text)
     {
         var value = (text ?? string.Empty).TrimStart();
-        return value.StartsWith("/search", StringComparison.OrdinalIgnoreCase)
-               || value.StartsWith("/browse", StringComparison.OrdinalIgnoreCase)
-               || value.StartsWith("/remember", StringComparison.OrdinalIgnoreCase);
+        return value.StartsWith("/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<string> TryExtractSummaryBullets(IReadOnlyList<LocalSessionStore.SessionTranscriptEntry> transcript)
@@ -2095,16 +2116,19 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 }
 
                 var sourcesBlock = new StringBuilder();
-                for (var i = 0; i < results.Count; i++)
+                var sourceOrder = BuildSearchBrowseCandidateOrder(results);
+                foreach (var idx in sourceOrder.Take(4))
                 {
-                    var r = results[i];
-                    sourcesBlock.Append('[').Append(i + 1).Append("] ");
+                    var r = results[idx];
+                    sourcesBlock.Append('[').Append(idx + 1).Append("] ");
                     sourcesBlock.AppendLine(r.Title);
                     sourcesBlock.AppendLine(r.Url);
                     if (!string.IsNullOrWhiteSpace(r.Snippet)) sourcesBlock.AppendLine(r.Snippet);
                     if (!string.IsNullOrWhiteSpace(r.Source)) sourcesBlock.AppendLine("Source: " + r.Source);
                     sourcesBlock.AppendLine();
                 }
+                if (results.Count > 4)
+                    sourcesBlock.AppendLine($"(Sumber tambahan disingkat: {results.Count - 4} item tidak ditampilkan)");
 
                 var pagesBlock = new StringBuilder();
                 foreach (var (idx, page) in pages)
@@ -2113,14 +2137,17 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     pagesBlock.AppendLine(page.Url);
                     if (!string.IsNullOrWhiteSpace(page.Title)) pagesBlock.AppendLine(page.Title);
                     pagesBlock.AppendLine();
-                    pagesBlock.AppendLine(page.Text);
+                    var excerpt = page.Text;
+                    if (excerpt.Length > 2200)
+                        excerpt = excerpt.Substring(0, 2200) + "\n\n[...excerpt dipotong untuk grounding ringkas...]";
+                    pagesBlock.AppendLine(excerpt);
                     pagesBlock.AppendLine();
                 }
 
                 var searchModel = model;
                 var searchThinking = GetThinkingInstruction();
                 var searchFormat = GetStrictSearchTemplateInstruction();
-                var searchSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+                var searchSnapshot = await BuildSessionContextSnapshotForSearchAsync(sessionId, _cts.Token);
                 var searchGroundingRules =
                     "Grounding rules (search mode):\n" +
                     "- Jawab hanya dari sumber yang diberikan di bawah (search results + browsed excerpts).\n" +
@@ -2129,6 +2156,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).\n" +
                     "- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.\n" +
                     "- Jika sumber didominasi wiki sementara sumber non-wiki tipis/gagal di-browse, tulis keterbatasan data secara eksplisit di [FAKTA].\n" +
+                    "- Voice wajib konsisten gaya ChatAyi: pakai gua/lu, jangan campur kamu/Anda/gaya netral.\n" +
                     "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.\n\n" +
                     "[STRICT OUTPUT RULES - IDENTITY SAFETY]\n" +
                     "- Kamu adalah ChatAyi, bukan subjek yang dibahas.\n" +
@@ -2139,9 +2167,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.\n" +
                     "- Pelanggaran aturan ini dianggap jawaban salah.";
                 var searchSafety = BuildSafetyAndBoundariesInstruction(
-                    "Gunakan hanya bukti dari sumber web yang diberikan. Wajib Bahasa Indonesia. Setiap klaim faktual wajib sitasi [1], [2], dst. Jangan roleplay sebagai subjek pembahasan.",
+                    "Gunakan hanya bukti dari sumber web yang diberikan. Wajib Bahasa Indonesia. Setiap klaim faktual wajib sitasi [1], [2], dst. Jangan roleplay sebagai subjek pembahasan. Voice wajib gua/lu konsisten.",
                     searchThinking,
                     searchFormat,
+                    GetUnifiedVoiceInstruction(),
                     searchGroundingRules,
                     "Search results (Jina primary + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
@@ -2248,21 +2277,23 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 if (!string.IsNullOrWhiteSpace(page.Title)) pageBlock.AppendLine(page.Title);
                 pageBlock.AppendLine();
                 var compactText = page.Text;
-                if (compactText.Length > 7000)
-                    compactText = compactText.Substring(0, 7000) + "\n\n[...excerpt truncated for concise grounding...]";
+                if (compactText.Length > 3500)
+                    compactText = compactText.Substring(0, 3500) + "\n\n[...excerpt truncated for concise grounding...]";
                 pageBlock.AppendLine(compactText);
 
-                var browseSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+                var browseSnapshot = await BuildSessionContextSnapshotForBrowseAsync(sessionId, _cts.Token);
                 var browseGroundingRules =
                     "Aturan /browse:\n" +
                     "- Jawaban akhir WAJIB Bahasa Indonesia.\n" +
                     "- Jika halaman sumber berbahasa Inggris, parafrasekan ke Bahasa Indonesia, jangan copy paragraf Inggris mentah.\n" +
                     "- Jika konten halaman tidak cukup/jelas, nyatakan keterbatasannya secara jujur.\n" +
-                    "- Tetap netral pihak ketiga, jangan roleplay sebagai subjek halaman.";
+                    "- Tetap pihak ketiga, jangan roleplay sebagai subjek halaman.\n" +
+                    "- Voice wajib konsisten gaya ChatAyi: pakai gua/lu, jangan campur kamu/Anda/gaya netral.";
                 var browseSafety = BuildSafetyAndBoundariesInstruction(
-                    "Gunakan bukti dari halaman web yang diberikan dan cantumkan sitasi [1]. Jawaban harus Bahasa Indonesia, ringkas, dan tidak seperti dump mentah.",
+                    "Gunakan bukti dari halaman web yang diberikan dan cantumkan sitasi [1]. Jawaban harus Bahasa Indonesia, ringkas, tidak seperti dump mentah, dan voice gua/lu konsisten.",
                     browseThinking,
                     browseFormat,
+                    GetUnifiedVoiceInstruction(),
                     browseGroundingRules,
                     "Web page excerpt:\n\n" + pageBlock.ToString().Trim());
 
@@ -2343,9 +2374,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             var chatFormat = GetResponseFormatInstruction(hasSources: false);
             var sessionSnapshot = await BuildSessionContextSnapshotForNormalChatAsync(sessionId, _cts.Token);
             var chatSafety = BuildSafetyAndBoundariesInstruction(
-                "Use structured personal memory references only when relevant. If memory conflicts with the latest user message, follow the latest user message.",
+                "Gunakan memory personal hanya jika relevan. Jika memory bentrok dengan pesan user terbaru, ikuti pesan user terbaru. Voice wajib gua/lu konsisten.",
                 chatThinking,
-                chatFormat);
+                chatFormat,
+                GetUnifiedVoiceInstruction());
 
             var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
                 chatSafety,

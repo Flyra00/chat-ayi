@@ -124,6 +124,30 @@ public sealed class FreeSearchClient
             }
         }
 
+        // Last guard: if final set is still wiki-only, try one more non-wiki fill from DDG.
+        if (_ddgFallback is not null && combined.Count > 0 && CountNonWikipedia(combined) == 0)
+        {
+            try
+            {
+                var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
+                var mapped = FilterResults(
+                    ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
+                    maxResults);
+                var nonWiki = mapped
+                    .Where(x => Uri.TryCreate(x.Url, UriKind.Absolute, out var u) && !IsWikipedia(u))
+                    .ToList();
+                if (nonWiki.Count > 0)
+                {
+                    Debug.WriteLine($"[SearchFlow] nonwiki-rescue from=ddg count={nonWiki.Count}");
+                    AppendMissingDiverse(combined, nonWiki, maxResults);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
         if (combined.Count > 0)
         {
             var sourceCounts = string.Join(", ",
