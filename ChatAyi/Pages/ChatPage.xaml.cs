@@ -2027,9 +2027,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     return;
                 }
 
-                // Combine search + browse: fetch the first couple of pages.
+                // Combine search + browse: fetch up to two successful pages.
                 var pages = new List<(int Index, BrowseClient.BrowsePage Page)>();
-                for (var i = 0; i < Math.Min(2, results.Count); i++)
+                for (var i = 0; i < results.Count && pages.Count < 2; i++)
                 {
                     try
                     {
@@ -2092,7 +2092,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchFormat,
                     searchGroundingRules,
                     string.IsNullOrWhiteSpace(searchMemoryContext) ? null : "Local memory (if relevant):\n\n" + searchMemoryContext,
-                    "Search results (hybrid providers):\n\n" + sourcesBlock.ToString().Trim(),
+                    "Search results (Jina primary + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 
                 var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(

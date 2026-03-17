@@ -28,28 +28,28 @@ public sealed class FreeSearchClient
 
         var combined = new List<SearchResult>();
 
-        // 1) SearXNG search
+        // 1) Jina Search primary
         try
         {
-            var searxng = await _searxng.SearchAsync(query, maxResults, ct);
-            var mapped = FilterResults(
-                searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
-                maxResults);
-            combined.AddRange(mapped);
+            var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
+            jina = FilterResults(jina, maxResults);
+            AppendMissingDiverse(combined, jina, maxResults);
         }
         catch
         {
             // ignore
         }
 
-        // 2) DuckDuckGo fallback/fill (existing provider)
+        // 2) SearXNG fallback/fill
         if (combined.Count < 3 || HasLowDomainVariety(combined, minDistinctDomains: 3))
         {
             try
             {
-                var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
-                jina = FilterResults(jina, maxResults);
-                AppendMissingDiverse(combined, jina, maxResults);
+                var searxng = await _searxng.SearchAsync(query, maxResults, ct);
+                var mapped = FilterResults(
+                    searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
+                    maxResults);
+                AppendMissingDiverse(combined, mapped, maxResults);
             }
             catch
             {
@@ -474,6 +474,10 @@ public sealed class FreeSearchClient
     {
         var host = NormalizeDomainKey(uri.Host);
         var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
+
+        // Jina endpoints are transport/search helpers, not final reference sources.
+        if (host is "s.jina.ai" or "r.jina.ai")
+            return true;
 
         if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
             && IsLikelyLowValueGithubUrl(path))
