@@ -90,6 +90,7 @@ public static class MauiProgram
             return new BrowseClient(http);
         });
         builder.Services.AddSingleton<LocalMemoryStore>();
+        builder.Services.AddSingleton<PersonalMemoryStore>();
         builder.Services.AddSingleton<LocalSessionStore>();
         builder.Services.AddSingleton<SessionCatalogStore>();
         builder.Services.AddSingleton<PersonaProfileStore>();
