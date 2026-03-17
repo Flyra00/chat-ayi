@@ -57,8 +57,11 @@ public sealed class FreeSearchClient
             }
         }
 
+        var needsQualityBoost = HasLowDomainVariety(combined, minDistinctDomains: 3)
+                                || CountNonWikipedia(combined) < Math.Min(2, maxResults);
+
         // 3) DuckDuckGo fallback/fill (existing provider)
-        if (_ddgFallback is not null && combined.Count < maxResults)
+        if (_ddgFallback is not null && (combined.Count < maxResults || needsQualityBoost))
         {
             try
             {
@@ -75,7 +78,7 @@ public sealed class FreeSearchClient
         }
 
         // 4) GitHub repositories search (unauth, rate-limited)
-        if (combined.Count < maxResults)
+        if (combined.Count < maxResults || needsQualityBoost)
         {
             try
             {
@@ -243,23 +246,46 @@ public sealed class FreeSearchClient
 
     private static List<SearchResult> FilterResults(IEnumerable<SearchResult> input, int maxResults)
     {
+        var candidates = input
+            .Where(x => x is not null)
+            .Select(r =>
+            {
+                var title = (r.Title ?? string.Empty).Trim();
+                var url = (r.Url ?? string.Empty).Trim();
+                var snippet = (r.Snippet ?? string.Empty).Trim();
+                var source = (r.Source ?? string.Empty).Trim();
+
+                if (url.Length == 0)
+                    return null;
+
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                    return null;
+
+                if (uri.Scheme is not ("http" or "https"))
+                    return null;
+
+                if (IsLowQualitySource(uri, title, snippet, source))
+                    return null;
+
+                var score = GetSourcePriority(uri, title, snippet, source);
+                return new { title, url, snippet, source, uri, score };
+            })
+            .Where(x => x is not null)
+            .OrderByDescending(x => x.score)
+            .ThenBy(x => x.url, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         var outList = new List<SearchResult>();
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var seenDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var r in input)
+        foreach (var c in candidates)
         {
-            if (r is null) continue;
-
-            var title = (r.Title ?? string.Empty).Trim();
-            var url = (r.Url ?? string.Empty).Trim();
-            var snippet = (r.Snippet ?? string.Empty).Trim();
-            var source = (r.Source ?? string.Empty).Trim();
-
-            if (url.Length == 0) continue;
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) continue;
-            if (uri.Scheme is not ("http" or "https")) continue;
-            if (IsLowQualitySource(uri, title, snippet, source)) continue;
+            var title = c.title;
+            var url = c.url;
+            var snippet = c.snippet;
+            var source = c.source;
+            var uri = c.uri;
 
             var urlKey = NormalizeUrlKey(uri);
             if (!seenUrls.Add(urlKey)) continue;
@@ -280,9 +306,6 @@ public sealed class FreeSearchClient
 
     private static void AppendMissingDiverse(List<SearchResult> target, IEnumerable<SearchResult> source, int maxResults)
     {
-        if (target.Count >= maxResults)
-            return;
-
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var seenDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -302,9 +325,6 @@ public sealed class FreeSearchClient
 
         foreach (var item in source)
         {
-            if (target.Count >= maxResults)
-                break;
-
             if (item is null || string.IsNullOrWhiteSpace(item.Url))
                 continue;
 
@@ -318,6 +338,21 @@ public sealed class FreeSearchClient
             var domain = NormalizeDomainKey(uri.Host);
             if (domain.Length == 0 || !seenDomains.Add(domain))
                 continue;
+
+            if (target.Count >= maxResults)
+            {
+                if (!IsWikipedia(uri))
+                {
+                    var wikiIdx = FindFirstWikipediaIndex(target);
+                    if (wikiIdx >= 0)
+                    {
+                        target[wikiIdx] = item;
+                        RebuildSeenSets(target, seenUrls, seenDomains);
+                    }
+                }
+
+                continue;
+            }
 
             target.Add(item);
         }
@@ -337,7 +372,102 @@ public sealed class FreeSearchClient
         var value = (host ?? string.Empty).Trim().ToLowerInvariant();
         if (value.StartsWith("www.", StringComparison.Ordinal))
             value = value.Substring(4);
+
+        if (value.EndsWith(".wikipedia.org", StringComparison.Ordinal))
+            value = "wikipedia.org";
+
         return value;
+    }
+
+    private static int GetSourcePriority(Uri uri, string title, string snippet, string source)
+    {
+        var score = 0;
+        var host = NormalizeDomainKey(uri.Host);
+        var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
+        var text = ((title ?? string.Empty) + " " + (snippet ?? string.Empty) + " " + (source ?? string.Empty)).ToLowerInvariant();
+
+        if (host.Contains("docs.", StringComparison.Ordinal)
+            || host.Contains("developer.", StringComparison.Ordinal)
+            || host.Contains("readthedocs", StringComparison.Ordinal)
+            || path.Contains("/docs", StringComparison.Ordinal)
+            || path.Contains("/reference", StringComparison.Ordinal)
+            || path.Contains("/api", StringComparison.Ordinal)
+            || text.Contains("official", StringComparison.Ordinal)
+            || text.Contains("documentation", StringComparison.Ordinal))
+        {
+            score += 4;
+        }
+
+        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 2)
+                score += 3;
+        }
+
+        if (IsWikipedia(uri))
+            score -= 2;
+
+        return score;
+    }
+
+    private static int CountNonWikipedia(IEnumerable<SearchResult> items)
+    {
+        var count = 0;
+        foreach (var item in items)
+        {
+            if (item is null || string.IsNullOrWhiteSpace(item.Url))
+                continue;
+
+            if (!Uri.TryCreate(item.Url, UriKind.Absolute, out var uri))
+                continue;
+
+            if (!IsWikipedia(uri))
+                count++;
+        }
+
+        return count;
+    }
+
+    private static bool IsWikipedia(Uri uri)
+        => NormalizeDomainKey(uri.Host).Equals("wikipedia.org", StringComparison.Ordinal);
+
+    private static int FindFirstWikipediaIndex(IReadOnlyList<SearchResult> items)
+    {
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            if (item is null || string.IsNullOrWhiteSpace(item.Url))
+                continue;
+
+            if (!Uri.TryCreate(item.Url, UriKind.Absolute, out var uri))
+                continue;
+
+            if (IsWikipedia(uri))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static void RebuildSeenSets(IEnumerable<SearchResult> target, HashSet<string> seenUrls, HashSet<string> seenDomains)
+    {
+        seenUrls.Clear();
+        seenDomains.Clear();
+
+        foreach (var existing in target)
+        {
+            if (existing is null || string.IsNullOrWhiteSpace(existing.Url))
+                continue;
+
+            if (!Uri.TryCreate(existing.Url, UriKind.Absolute, out var uri))
+                continue;
+
+            seenUrls.Add(NormalizeUrlKey(uri));
+            var domain = NormalizeDomainKey(uri.Host);
+            if (domain.Length > 0)
+                seenDomains.Add(domain);
+        }
     }
 
     private static bool IsLowQualitySource(Uri uri, string title, string snippet, string source)

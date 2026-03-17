@@ -1019,7 +1019,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         sb.AppendLine("KONSTRAINT OUTPUT /search (WAJIB):");
         sb.AppendLine("- Output HARUS berupa bullet template tetap, bukan paragraf bebas.");
         sb.AppendLine("- Dilarang gaya ensiklopedik/rangkuman artikel panjang.");
-        sb.AppendLine("- Voice tetap ChatAyi (gaya gua/lu, santai, blak-blakan) di isi bullet, bukan gimmick pembuka.");
+        sb.AppendLine("- Gunakan sudut pandang pihak ketiga yang netral, bukan roleplay orang pertama.");
         sb.AppendLine("- Semua klaim di [FAKTA] wajib bersitasi [n] yang cocok dengan bagian Sumber.");
         sb.AppendLine("- Jika data sumber lemah/kurang/konflik, tulis keterbatasan data di [FAKTA].");
         sb.AppendLine("- Jika inferensi tidak ada, wajib tulis tepat: '- Tidak ada inferensi tambahan.' di [INFERENSI].");
@@ -2074,9 +2074,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "Grounding rules (search mode):\n" +
                     "- Jawab hanya dari sumber yang diberikan di bawah (search results + browsed excerpts).\n" +
                     "- Jangan pakai pengetahuan umum/model jika tidak didukung sumber.\n" +
+                    "- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.\n" +
                     "- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).\n" +
                     "- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.\n" +
-                    "- Voice wajib tetap ChatAyi: Bahasa Indonesia gaul, gua/lu, santai, blak-blakan, sedikit nyentil tapi tetap membantu.\n" +
                     "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.\n\n" +
                     "[STRICT OUTPUT RULES - IDENTITY SAFETY]\n" +
                     "- Kamu adalah ChatAyi, bukan subjek yang dibahas.\n" +
@@ -2087,7 +2087,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     "- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.\n" +
                     "- Pelanggaran aturan ini dianggap jawaban salah.";
                 var searchSafety = BuildSafetyAndBoundariesInstruction(
-                    "Use only provided web search evidence; keep ChatAyi persona voice (gua/lu, santai, blak-blakan); cite sources like [1], [2] for every factual claim.",
+                    "Gunakan hanya bukti dari sumber web yang diberikan. Wajib Bahasa Indonesia. Setiap klaim faktual wajib sitasi [1], [2], dst. Jangan roleplay sebagai subjek pembahasan.",
                     searchThinking,
                     searchFormat,
                     searchGroundingRules,
@@ -2187,7 +2187,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 }
 
                 var browseModel = model;
-                var q = string.IsNullOrWhiteSpace(question) ? "Summarize this page." : question;
+                var q = string.IsNullOrWhiteSpace(question) ? "Ringkas isi halaman ini dalam bahasa Indonesia." : question;
                 var browseMemoryContext = await _memory.GetContextAsync(q, _cts.Token);
                 var browseThinking = GetThinkingInstruction();
                 var browseFormat = GetResponseFormatInstruction(hasSources: true);
@@ -2199,10 +2199,17 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 pageBlock.AppendLine(page.Text);
 
                 var browseSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+                var browseGroundingRules =
+                    "Aturan /browse:\n" +
+                    "- Jawaban akhir WAJIB Bahasa Indonesia.\n" +
+                    "- Jika halaman sumber berbahasa Inggris, parafrasekan ke Bahasa Indonesia, jangan copy paragraf Inggris mentah.\n" +
+                    "- Jika konten halaman tidak cukup/jelas, nyatakan keterbatasannya secara jujur.\n" +
+                    "- Tetap netral pihak ketiga, jangan roleplay sebagai subjek halaman.";
                 var browseSafety = BuildSafetyAndBoundariesInstruction(
-                    "Use provided web page evidence when relevant and cite sources like [1].",
+                    "Gunakan bukti dari halaman web yang diberikan dan cantumkan sitasi [1]. Jawaban harus Bahasa Indonesia.",
                     browseThinking,
                     browseFormat,
+                    browseGroundingRules,
                     string.IsNullOrWhiteSpace(browseMemoryContext) ? null : "Local memory (if relevant):\n\n" + browseMemoryContext,
                     "Web page excerpt:\n\n" + pageBlock.ToString().Trim());
 

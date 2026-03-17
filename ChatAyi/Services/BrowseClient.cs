@@ -61,6 +61,8 @@ public sealed class BrowseClient
             var text = HtmlToText(raw);
             if (text.Length < 80)
                 throw new InvalidOperationException("No readable page content extracted.");
+            if (LooksLikeBlockedOrNoisy(text))
+                throw new InvalidOperationException("Page content appears blocked or noisy.");
 
             text = Truncate(text, MaxBrowseChars);
             return new BrowsePage(finalUrl, title, text);
@@ -71,6 +73,8 @@ public sealed class BrowseClient
             var text = NormalizeWhitespace(raw);
             if (text.Length < 40)
                 throw new InvalidOperationException("Content is empty or unsupported for grounding.");
+            if (LooksLikeBlockedOrNoisy(text))
+                throw new InvalidOperationException("Page content appears blocked or noisy.");
 
             text = Truncate(text, MaxBrowseChars);
             return new BrowsePage(finalUrl, string.Empty, text);
@@ -109,6 +113,8 @@ public sealed class BrowseClient
             var raw = Encoding.UTF8.GetString(bytes);
             var text = NormalizeWhitespace(raw);
             if (!IsReadableEnough(text, minChars: 80))
+                return null;
+            if (LooksLikeBlockedOrNoisy(text))
                 return null;
 
             var title = ExtractReadableTitle(text);
@@ -266,5 +272,32 @@ public sealed class BrowseClient
             cut = maxChars;
 
         return s.Substring(0, cut).TrimEnd() + "\n\n[...truncated...]";
+    }
+
+    private static bool LooksLikeBlockedOrNoisy(string text)
+    {
+        var value = (text ?? string.Empty).ToLowerInvariant();
+        if (value.Length == 0)
+            return true;
+
+        var noisyTokens = new[]
+        {
+            "verify you are human",
+            "captcha",
+            "enable javascript",
+            "attention required",
+            "cloudflare",
+            "access denied",
+            "too many requests",
+            "request blocked"
+        };
+
+        foreach (var token in noisyTokens)
+        {
+            if (value.Contains(token, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 }
