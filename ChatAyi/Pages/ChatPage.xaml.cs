@@ -30,6 +30,9 @@ public partial class ChatPage : ContentPage
     private readonly BrowseClient _browse;
     private readonly LocalMemoryStore _memory;
     private readonly LocalSessionStore _sessions;
+    private readonly SessionCatalogStore _sessionCatalog;
+    private readonly PersonaProfileStore _personaProfileStore;
+    private readonly PromptContextAssembler _promptContextAssembler;
     private CancellationTokenSource _cts;
     private bool _isSending;
     private string _inputText = string.Empty;
@@ -522,6 +525,9 @@ public partial class ChatPage : ContentPage
                   ?? new BrowseClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
         _memory = services?.GetService<LocalMemoryStore>() ?? new LocalMemoryStore();
         _sessions = services?.GetService<LocalSessionStore>() ?? new LocalSessionStore();
+        _sessionCatalog = services?.GetService<SessionCatalogStore>() ?? new SessionCatalogStore();
+        _personaProfileStore = services?.GetService<PersonaProfileStore>() ?? new PersonaProfileStore();
+        _promptContextAssembler = services?.GetService<PromptContextAssembler>() ?? new PromptContextAssembler();
 
         CopyMessageCommand = new Command<object>(async (param) => await CopyMessageAsync(param));
         ToggleSettingsCommand = new Command(() => IsSettingsOpen = !IsSettingsOpen);
@@ -750,13 +756,7 @@ public partial class ChatPage : ContentPage
 
                     if (captured.Length > 0)
                     {
-                        await _sessions.AppendAsync(item.SessionId, new
-                        {
-                            ts = DateTimeOffset.UtcNow,
-                            role = "assistant",
-                            content = captured.ToString(),
-                            model = item.Model
-                        }, _cts.Token);
+                        await AppendSessionRecordAsync(item.SessionId, "assistant", captured.ToString(), item.Model, string.Empty, _cts.Token);
                     }
 
                     await MainThread.InvokeOnMainThreadAsync(() => assistant.IsEphemeral = false);
@@ -948,6 +948,165 @@ public partial class ChatPage : ContentPage
             sb.AppendLine("- Jika memakai sumber yang diberikan, cantumkan sitasi [1], [2], dst dan akhiri dengan bagian 'Sumber'.");
         sb.AppendLine("- Jangan mengarang repo/tautan/fakta. Jika tidak yakin, tulis 'Saya belum yakin' dan minta link / gunakan /browse.");
         return sb.ToString().Trim();
+    }
+
+    private static string BuildSafetyAndBoundariesInstruction(
+        string purpose,
+        string thinkingInstruction,
+        string responseFormatInstruction,
+        params string[] optionalContextBlocks)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("System safety + app boundaries:");
+        sb.AppendLine("- Follow safety policy and refuse unsafe requests.");
+        sb.AppendLine("- Stay within app scope and avoid fabricating sources or facts.");
+        sb.AppendLine("- " + purpose);
+
+        if (!string.IsNullOrWhiteSpace(thinkingInstruction))
+            sb.AppendLine("- " + thinkingInstruction.Trim());
+
+        if (!string.IsNullOrWhiteSpace(responseFormatInstruction))
+            sb.AppendLine(responseFormatInstruction.Trim());
+
+        if (optionalContextBlocks is not null)
+        {
+            foreach (var block in optionalContextBlocks)
+            {
+                if (string.IsNullOrWhiteSpace(block))
+                    continue;
+
+                sb.AppendLine();
+                sb.AppendLine(block.Trim());
+            }
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    private async Task<string> GetOrCreateActiveSessionIdAsync(CancellationToken ct)
+    {
+        try
+        {
+            var active = await _sessionCatalog.GetActiveSessionIdAsync(ct);
+            if (LocalSessionStore.IsSafeSessionId(active))
+                return active;
+        }
+        catch
+        {
+            // fallback to preference-backed session id
+        }
+
+        var fallback = _sessions.GetOrCreateSessionId();
+        if (LocalSessionStore.IsSafeSessionId(fallback))
+        {
+            try
+            {
+                await _sessionCatalog.SetActiveSessionIdAsync(fallback, ct);
+            }
+            catch
+            {
+                // non-blocking fallback path
+            }
+        }
+
+        return fallback;
+    }
+
+    private async Task<SessionContextSnapshot> BuildSessionContextSnapshotAsync(string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            var recent = await _sessions.ReadRecentChatAsync(sessionId, 6, ct);
+            var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
+            var summary = TryExtractSummaryBullets(transcript);
+            return SessionContextSnapshot.Create(sessionId, recent, summary);
+        }
+        catch
+        {
+            return SessionContextSnapshot.Create(sessionId, Enumerable.Empty<(string Role, string Content)>(), Enumerable.Empty<string>());
+        }
+    }
+
+    private static IReadOnlyList<string> TryExtractSummaryBullets(IReadOnlyList<LocalSessionStore.SessionTranscriptEntry> transcript)
+    {
+        if (transcript is null || transcript.Count == 0)
+            return Array.Empty<string>();
+
+        for (var i = transcript.Count - 1; i >= 0; i--)
+        {
+            var entry = transcript[i];
+            if (!string.Equals(entry.Role, "system", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (string.IsNullOrWhiteSpace(entry.Content))
+                continue;
+
+            var bullets = entry.Content
+                .Split('\n')
+                .Select(x => x.Trim())
+                .Where(x => x.StartsWith("- ", StringComparison.Ordinal) || x.StartsWith("* ", StringComparison.Ordinal))
+                .Select(x => x[2..].Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Take(5)
+                .ToList();
+
+            if (bullets.Count > 0)
+                return bullets;
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private async Task AppendSessionRecordAsync(
+        string sessionId,
+        string role,
+        string content,
+        string model,
+        string titleSource,
+        CancellationToken ct)
+    {
+        var safeRole = (role ?? string.Empty).Trim().ToLowerInvariant();
+        var safeContent = (content ?? string.Empty).Trim();
+        var safeModel = (model ?? string.Empty).Trim();
+        var title = safeRole == "user" ? BuildSessionTitle(titleSource) : string.Empty;
+
+        try
+        {
+            await _sessions.AppendWithMetadataAsync(
+                sessionId,
+                new
+                {
+                    ts = DateTimeOffset.UtcNow,
+                    role = safeRole,
+                    content = safeContent,
+                    model = safeModel
+                },
+                _sessionCatalog,
+                title,
+                ct);
+
+            if (safeRole == "user")
+                await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
+        }
+        catch
+        {
+            await _sessions.AppendAsync(sessionId, new
+            {
+                ts = DateTimeOffset.UtcNow,
+                role = safeRole,
+                content = safeContent,
+                model = safeModel
+            }, ct);
+        }
+    }
+
+    private static string BuildSessionTitle(string text)
+    {
+        var cleaned = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return "New Session";
+
+        return cleaned.Length <= 60 ? cleaned : cleaned[..60].TrimEnd() + "...";
     }
 
     private static string TrimForContext(string s, int maxChars)
@@ -1188,7 +1347,9 @@ public partial class ChatPage : ContentPage
                 return;
             }
 
-            var sessionId = _sessions.GetOrCreateSessionId();
+            var sessionId = await GetOrCreateActiveSessionIdAsync(_cts.Token);
+            var persona = _personaProfileStore.LoadPersona();
+            var profile = _personaProfileStore.LoadProfile();
             var provider = CurrentProvider;
             var model = string.IsNullOrWhiteSpace(CurrentModel)
                 ? (provider == ChatApiClient.Provider.NvidiaIntegrate ? "z-ai/glm5"
@@ -1278,12 +1439,13 @@ public partial class ChatPage : ContentPage
                     wroteDaily = daily.Count;
                 }
 
-                await _sessions.AppendAsync(sessionId, new
-                {
-                    ts = DateTimeOffset.UtcNow,
-                    role = "system",
-                    content = $"/remember wrote longterm={wroteLong} daily={wroteDaily}"
-                }, _cts.Token);
+                await AppendSessionRecordAsync(
+                    sessionId,
+                    "system",
+                    $"/remember wrote longterm={wroteLong} daily={wroteDaily}",
+                    model,
+                    string.Empty,
+                    _cts.Token);
 
                 assistant.Content = $"Remember OK\nlongterm: {wroteLong}\ndaily: {wroteDaily}";
 
@@ -1372,35 +1534,24 @@ public partial class ChatPage : ContentPage
                 var searchMemoryContext = await _memory.GetContextAsync(q, _cts.Token);
                 var searchThinking = GetThinkingInstruction();
                 var searchFormat = GetResponseFormatInstruction(hasSources: true);
-                var searchRequestMessages = new List<object>
-                {
-                    new
-                    {
-                        role = "system",
-                        content = "Reply in Indonesian. " +
-                                  (string.IsNullOrWhiteSpace(searchThinking) ? string.Empty : (searchThinking + " ")) +
-                                  (string.IsNullOrWhiteSpace(searchFormat) ? string.Empty : (searchFormat + " ")) +
-                                  "You are given web search results and (optionally) page excerpts. Answer using them when relevant. Include citations like [1], [2]."
-                    }
-                };
+                var searchSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+                var searchSafety = BuildSafetyAndBoundariesInstruction(
+                    "Use provided web search evidence when relevant and cite sources like [1], [2].",
+                    searchThinking,
+                    searchFormat,
+                    string.IsNullOrWhiteSpace(searchMemoryContext) ? null : "Local memory (if relevant):\n\n" + searchMemoryContext,
+                    "Search results (DuckDuckGo Instant Answer):\n\n" + sourcesBlock.ToString().Trim(),
+                    pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 
-                if (!string.IsNullOrWhiteSpace(searchMemoryContext))
-                {
-                    searchRequestMessages.Add(new
-                    {
-                        role = "system",
-                        content = "Local memory (if relevant):\n\n" + searchMemoryContext
-                    });
-                }
-
-                searchRequestMessages.Add(new { role = "system", content = "Search results (DuckDuckGo Instant Answer):\n\n" + sourcesBlock.ToString().Trim() });
-                if (pagesBlock.Length > 0)
-                    searchRequestMessages.Add(new { role = "system", content = "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() });
-
-                searchRequestMessages.Add(new { role = "user", content = q });
+                var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+                    searchSafety,
+                    persona,
+                    profile,
+                    searchSnapshot,
+                    q));
                 searchRequestMessages = ApplyDcp(searchRequestMessages, provider);
 
-                await _sessions.AppendAsync(sessionId, new { ts = DateTimeOffset.UtcNow, role = "user", content = "/search " + q, model = searchModel }, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "user", "/search " + q, searchModel, q, _cts.Token);
 
                 assistant.Content = string.Empty;
 
@@ -1443,7 +1594,7 @@ public partial class ChatPage : ContentPage
 
                 if (searchCaptured.Length > 0)
                 {
-                    await _sessions.AppendAsync(sessionId, new { ts = DateTimeOffset.UtcNow, role = "assistant", content = searchCaptured.ToString(), model = searchModel }, _cts.Token);
+                    await AppendSessionRecordAsync(sessionId, "assistant", searchCaptured.ToString(), searchModel, string.Empty, _cts.Token);
                 }
 
                 return;
@@ -1488,37 +1639,29 @@ public partial class ChatPage : ContentPage
                 var browseThinking = GetThinkingInstruction();
                 var browseFormat = GetResponseFormatInstruction(hasSources: true);
 
-                var browseRequestMessages = new List<object>
-                {
-                    new
-                    {
-                        role = "system",
-                        content = "Reply in Indonesian. " +
-                                  (string.IsNullOrWhiteSpace(browseThinking) ? string.Empty : (browseThinking + " ")) +
-                                  (string.IsNullOrWhiteSpace(browseFormat) ? string.Empty : (browseFormat + " ")) +
-                                  "You are given a web page excerpt. Answer using it when relevant. Include citations like [1]."
-                    }
-                };
-                if (!string.IsNullOrWhiteSpace(browseMemoryContext))
-                {
-                    browseRequestMessages.Add(new
-                    {
-                        role = "system",
-                        content = "Local memory (if relevant):\n\n" + browseMemoryContext
-                    });
-                }
-
                 var pageBlock = new StringBuilder();
                 pageBlock.AppendLine("[1] " + page.Url);
                 if (!string.IsNullOrWhiteSpace(page.Title)) pageBlock.AppendLine(page.Title);
                 pageBlock.AppendLine();
                 pageBlock.AppendLine(page.Text);
 
-                browseRequestMessages.Add(new { role = "system", content = "Web page excerpt:\n\n" + pageBlock.ToString().Trim() });
-                browseRequestMessages.Add(new { role = "user", content = q });
+                var browseSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+                var browseSafety = BuildSafetyAndBoundariesInstruction(
+                    "Use provided web page evidence when relevant and cite sources like [1].",
+                    browseThinking,
+                    browseFormat,
+                    string.IsNullOrWhiteSpace(browseMemoryContext) ? null : "Local memory (if relevant):\n\n" + browseMemoryContext,
+                    "Web page excerpt:\n\n" + pageBlock.ToString().Trim());
+
+                var browseRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+                    browseSafety,
+                    persona,
+                    profile,
+                    browseSnapshot,
+                    q));
                 browseRequestMessages = ApplyDcp(browseRequestMessages, provider);
 
-                await _sessions.AppendAsync(sessionId, new { ts = DateTimeOffset.UtcNow, role = "user", content = "/browse " + url + (question.Length > 0 ? " " + question : ""), model = browseModel }, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "user", "/browse " + url + (question.Length > 0 ? " " + question : ""), browseModel, q, _cts.Token);
 
                 assistant.Content = string.Empty;
 
@@ -1561,69 +1704,32 @@ public partial class ChatPage : ContentPage
 
                 if (browseCaptured.Length > 0)
                 {
-                    await _sessions.AppendAsync(sessionId, new { ts = DateTimeOffset.UtcNow, role = "assistant", content = browseCaptured.ToString(), model = browseModel }, _cts.Token);
+                    await AppendSessionRecordAsync(sessionId, "assistant", browseCaptured.ToString(), browseModel, string.Empty, _cts.Token);
                 }
 
                 return;
             }
 
-            // Keep only recent context. NVIDIA models tend to slow down more with longer context.
-            // IMPORTANT: request messages should end with the latest user message.
-            // Exclude ephemeral placeholder messages (streaming/queued/error banners).
-            var maxHistory = provider == ChatApiClient.Provider.NvidiaIntegrate ? 10 : 20;
-            var maxMsgChars = provider == ChatApiClient.Provider.NvidiaIntegrate ? 2000 : 4000;
-
-            var history = Messages.Where(m => !m.IsEphemeral).TakeLast(maxHistory)
-                .Select(m => (object)new { role = m.Role, content = TrimForContext(m.Content, maxMsgChars) })
-                .ToList();
-
-            // Current provider/model
-
-            await _sessions.AppendAsync(sessionId, new
-            {
-                ts = DateTimeOffset.UtcNow,
-                role = "user",
-                content = prompt,
-                model
-            }, _cts.Token);
-
             var memoryContext = await _memory.GetContextAsync(prompt, _cts.Token);
-            memoryContext = TrimForContext(memoryContext, provider == ChatApiClient.Provider.NvidiaIntegrate ? 1800 : 3500);
-            IEnumerable<object> requestMessages;
             var chatThinking = GetThinkingInstruction();
             var chatFormat = GetResponseFormatInstruction(hasSources: false);
-            if (!string.IsNullOrWhiteSpace(memoryContext))
-            {
-                var list = new List<object>
-                {
-                    new
-                    {
-                        role = "system",
-                        content = "Reply in Indonesian.\n" +
-                                  (string.IsNullOrWhiteSpace(chatThinking) ? string.Empty : (chatThinking + "\n")) +
-                                  (string.IsNullOrWhiteSpace(chatFormat) ? string.Empty : (chatFormat + "\n")) +
-                                  "Use the following knowledge base excerpts when helpful. If they are not relevant, ignore them.\n\n" + memoryContext
-                    }
-                };
-                list.AddRange(history);
-                requestMessages = list;
-            }
-            else
-            {
-                // Still enforce language.
-                requestMessages = new List<object>
-                {
-                    new
-                    {
-                        role = "system",
-                        content = "Reply in Indonesian." +
-                                  (string.IsNullOrWhiteSpace(chatThinking) ? string.Empty : ("\n" + chatThinking)) +
-                                  (string.IsNullOrWhiteSpace(chatFormat) ? string.Empty : ("\n" + chatFormat))
-                    }
-                }.Concat(history);
-            }
+            memoryContext = TrimForContext(memoryContext, provider == ChatApiClient.Provider.NvidiaIntegrate ? 1800 : 3500);
+            var sessionSnapshot = await BuildSessionContextSnapshotAsync(sessionId, _cts.Token);
+            var chatSafety = BuildSafetyAndBoundariesInstruction(
+                "Use local memory excerpts only when relevant. If irrelevant, ignore them.",
+                chatThinking,
+                chatFormat,
+                string.IsNullOrWhiteSpace(memoryContext) ? null : "Local memory (if relevant):\n\n" + memoryContext);
 
+            var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+                chatSafety,
+                persona,
+                profile,
+                sessionSnapshot,
+                prompt));
             requestMessages = ApplyDcp(requestMessages.ToList(), provider);
+
+            await AppendSessionRecordAsync(sessionId, "user", prompt, model, prompt, _cts.Token);
 
             // Throttle UI updates to avoid ANR/freezes on Android.
             var pending = new StringBuilder();
@@ -1730,13 +1836,7 @@ public partial class ChatPage : ContentPage
 
             if (captured.Length > 0)
             {
-                await _sessions.AppendAsync(sessionId, new
-                {
-                    ts = DateTimeOffset.UtcNow,
-                    role = "assistant",
-                    content = captured.ToString(),
-                    model
-                }, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "assistant", captured.ToString(), model, string.Empty, _cts.Token);
             }
 
             assistant.IsEphemeral = false;

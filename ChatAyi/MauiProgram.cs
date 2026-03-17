@@ -91,6 +91,9 @@ public static class MauiProgram
         });
         builder.Services.AddSingleton<LocalMemoryStore>();
         builder.Services.AddSingleton<LocalSessionStore>();
+        builder.Services.AddSingleton<SessionCatalogStore>();
+        builder.Services.AddSingleton<PersonaProfileStore>();
+        builder.Services.AddSingleton<PromptContextAssembler>();
 
         return builder.Build();
     }
