@@ -22,7 +22,9 @@ public sealed record AssistantPersona
     public AssistantPersona Normalize()
         => new()
         {
-            RoleStatement = DefaultRoleStatement,
+            RoleStatement = string.IsNullOrWhiteSpace(RoleStatement)
+                ? DefaultRoleStatement
+                : RoleStatement.Trim(),
             Tone = NormalizeTone(Tone),
             ResponseStyleDirectives = string.IsNullOrWhiteSpace(ResponseStyleDirectives)
                 ? DefaultResponseStyleDirectives

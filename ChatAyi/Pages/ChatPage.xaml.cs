@@ -10,7 +10,7 @@ using Microsoft.Maui.Storage;
 
 namespace ChatAyi.Pages;
 
-public partial class ChatPage : ContentPage
+public partial class ChatPage : ContentPage, IQueryAttributable
 {
     private const string ThinkingModeKey = "ChatAyi.ThinkingMode";
     private const string EnableWebToolsKey = "ChatAyi.EnableWebTools";
@@ -73,6 +73,7 @@ public partial class ChatPage : ContentPage
     private SessionMeta _selectedSession;
     private bool _syncingSessionSelection;
     private bool _sessionInitialized;
+    private bool _forceFreshSessionOnAppear;
 
     private static readonly string[] CerebrasModels =
     {
@@ -871,73 +872,101 @@ public partial class ChatPage : ContentPage
     {
         base.OnAppearing();
 
-        if (!_connectivitySubscribed)
-        {
-            Connectivity.ConnectivityChanged += OnConnectivityChanged;
-            _connectivitySubscribed = true;
-        }
-
-        if (!_sessionInitialized)
-            await EnsureSessionCatalogInitializedAsync(CancellationToken.None);
-
-        if (_checkedKey) return;
-        _checkedKey = true;
-
-        _thinkingMode = NormalizeThinkingMode(Preferences.Get(ThinkingModeKey, "off"));
-        var provider = (Preferences.Get(ProviderKey, "cerebras") ?? "cerebras").Trim().ToLowerInvariant();
-        _providerIndex = provider switch
-        {
-            "nvidia" => 1,
-            "inception" => 2,
-            _ => 0
-        };
-        var (modelKey, modelFallback) = provider switch
-        {
-            "nvidia" => (NvidiaModelKey, "z-ai/glm5"),
-            "inception" => (InceptionModelKey, "mercury-2"),
-            _ => (CerebrasModelKey, "gpt-oss-120b")
-        };
-        _currentModel = Preferences.Get(modelKey, modelFallback);
-        if (!ModelOptions.Contains(_currentModel, StringComparer.OrdinalIgnoreCase))
-            _currentModel = modelFallback;
-        _enableWebTools = Preferences.Get(EnableWebToolsKey, true);
-        _enableRemember = Preferences.Get(EnableRememberKey, true);
-        _showCommandTips = Preferences.Get(ShowCommandTipsKey, true);
-        _structuredAnswers = Preferences.Get(StructuredAnswersKey, true);
-        _enableOfflineFallback = Preferences.Get(OfflineFallbackKey, true);
-        _queueWhileOffline = Preferences.Get(OfflineQueueKey, true);
-        _enableDcp = Preferences.Get(EnableDcpKey, true);
-
-        OnPropertyChanged(nameof(EnableWebTools));
-        OnPropertyChanged(nameof(EnableRemember));
-        OnPropertyChanged(nameof(ShowCommandTips));
-        OnPropertyChanged(nameof(ThinkingEnabled));
-        OnPropertyChanged(nameof(ThinkingVerbose));
-        OnPropertyChanged(nameof(StructuredAnswers));
-        OnPropertyChanged(nameof(ProviderIndex));
-        OnPropertyChanged(nameof(ProviderSubtitle));
-        OnPropertyChanged(nameof(CurrentModel));
-        OnPropertyChanged(nameof(ModelOptions));
-        OnPropertyChanged(nameof(CurrentModelStatusText));
-        OnPropertyChanged(nameof(EnableOfflineFallback));
-        OnPropertyChanged(nameof(QueueWhileOffline));
-        OnPropertyChanged(nameof(EnableDcp));
-        OnPropertyChanged(nameof(DcpSummaryText));
-        NotifyOfflineUi();
-
         try
         {
-            await _memory.EnsureInitializedAsync(CancellationToken.None);
+            if (_forceFreshSessionOnAppear)
+            {
+                _forceFreshSessionOnAppear = false;
+                await CreateNewSessionAsync();
+            }
+
+            if (!_connectivitySubscribed)
+            {
+                Connectivity.ConnectivityChanged += OnConnectivityChanged;
+                _connectivitySubscribed = true;
+            }
+
+            if (!_sessionInitialized)
+                await EnsureSessionCatalogInitializedAsync(CancellationToken.None);
+
+            if (_checkedKey) return;
+            _checkedKey = true;
+
+            _thinkingMode = NormalizeThinkingMode(Preferences.Get(ThinkingModeKey, "off"));
+            var provider = (Preferences.Get(ProviderKey, "cerebras") ?? "cerebras").Trim().ToLowerInvariant();
+            _providerIndex = provider switch
+            {
+                "nvidia" => 1,
+                "inception" => 2,
+                _ => 0
+            };
+            var (modelKey, modelFallback) = provider switch
+            {
+                "nvidia" => (NvidiaModelKey, "z-ai/glm5"),
+                "inception" => (InceptionModelKey, "mercury-2"),
+                _ => (CerebrasModelKey, "gpt-oss-120b")
+            };
+            _currentModel = Preferences.Get(modelKey, modelFallback);
+            if (!ModelOptions.Contains(_currentModel, StringComparer.OrdinalIgnoreCase))
+                _currentModel = modelFallback;
+            _enableWebTools = Preferences.Get(EnableWebToolsKey, true);
+            _enableRemember = Preferences.Get(EnableRememberKey, true);
+            _showCommandTips = Preferences.Get(ShowCommandTipsKey, true);
+            _structuredAnswers = Preferences.Get(StructuredAnswersKey, true);
+            _enableOfflineFallback = Preferences.Get(OfflineFallbackKey, true);
+            _queueWhileOffline = Preferences.Get(OfflineQueueKey, true);
+            _enableDcp = Preferences.Get(EnableDcpKey, true);
+
+            OnPropertyChanged(nameof(EnableWebTools));
+            OnPropertyChanged(nameof(EnableRemember));
+            OnPropertyChanged(nameof(ShowCommandTips));
+            OnPropertyChanged(nameof(ThinkingEnabled));
+            OnPropertyChanged(nameof(ThinkingVerbose));
+            OnPropertyChanged(nameof(StructuredAnswers));
+            OnPropertyChanged(nameof(ProviderIndex));
+            OnPropertyChanged(nameof(ProviderSubtitle));
+            OnPropertyChanged(nameof(CurrentModel));
+            OnPropertyChanged(nameof(ModelOptions));
+            OnPropertyChanged(nameof(CurrentModelStatusText));
+            OnPropertyChanged(nameof(EnableOfflineFallback));
+            OnPropertyChanged(nameof(QueueWhileOffline));
+            OnPropertyChanged(nameof(EnableDcp));
+            OnPropertyChanged(nameof(DcpSummaryText));
+            NotifyOfflineUi();
+
+            try
+            {
+                await _memory.EnsureInitializedAsync(CancellationToken.None);
+            }
+            catch { }
+
+            await EnsureApiKeyAsync(CurrentProvider);
+
+            if (CurrentProvider == ChatApiClient.Provider.NvidiaIntegrate)
+                await RefreshProviderModelsAsync(CurrentProvider);
+
+            if (EnableOfflineFallback && QueueWhileOffline && !IsOffline)
+                _ = ProcessOfflineQueueAsync();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[ChatPage] OnAppearing failed: {ex}");
+            await DisplayAlert("Chat Initialization Error", ex.Message, "OK");
+        }
+    }
 
-        await EnsureApiKeyAsync(CurrentProvider);
+    public void ApplyQueryAttributes(IDictionary<string, object> query)
+    {
+        if (query is null)
+            return;
 
-        if (CurrentProvider == ChatApiClient.Provider.NvidiaIntegrate)
-            await RefreshProviderModelsAsync(CurrentProvider);
+        if (!query.TryGetValue("fresh", out var value) || value is null)
+            return;
 
-        if (EnableOfflineFallback && QueueWhileOffline && !IsOffline)
-            _ = ProcessOfflineQueueAsync();
+        var raw = value.ToString()?.Trim();
+        _forceFreshSessionOnAppear = string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeThinkingMode(string raw)

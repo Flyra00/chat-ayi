@@ -30,7 +30,12 @@ public partial class GetStartedPage : ContentPage
         StartButton.IsEnabled = false;
         try
         {
-            await Shell.Current.GoToAsync("chat");
+            await Shell.Current.GoToAsync("chat?fresh=1");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[GetStarted] Navigation to chat failed: {ex}");
+            await DisplayAlert("Navigation Error", ex.Message, "OK");
         }
         finally
         {
