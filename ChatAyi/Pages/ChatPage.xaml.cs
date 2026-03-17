@@ -543,8 +543,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     new HttpClient { BaseAddress = new Uri("https://api.inceptionlabs.ai"), Timeout = TimeSpan.FromMinutes(10) });
         _search = services?.GetService<FreeSearchClient>()
                   ?? new FreeSearchClient(
-                      new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) }),
-                      new HttpClient { Timeout = TimeSpan.FromSeconds(20) });
+                      new SearxngSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, "https://searx.be"),
+                      new HttpClient { Timeout = TimeSpan.FromSeconds(20) },
+                      new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) }));
         _browse = services?.GetService<BrowseClient>()
                   ?? new BrowseClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
         _memory = services?.GetService<LocalMemoryStore>() ?? new LocalMemoryStore();
@@ -1997,7 +1998,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 List<FreeSearchClient.SearchResult> results;
                 try
                 {
-                    results = await _search.SearchAsync(q, maxResults: 6, _cts.Token);
+                    results = await _search.SearchAsync(q, maxResults: 5, _cts.Token);
                 }
                 catch (Exception ex)
                 {
@@ -2007,7 +2008,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 }
                 if (results.Count == 0)
                 {
-                    assistant.Content = "No results (DuckDuckGo Instant Answer returned empty).";
+                    assistant.Content = "No results from search provider.";
                     return;
                 }
 
@@ -2068,7 +2069,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchFormat,
                     searchGroundingRules,
                     string.IsNullOrWhiteSpace(searchMemoryContext) ? null : "Local memory (if relevant):\n\n" + searchMemoryContext,
-                    "Search results (DuckDuckGo Instant Answer):\n\n" + sourcesBlock.ToString().Trim(),
+                    "Search results (SearXNG):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 
                 var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(

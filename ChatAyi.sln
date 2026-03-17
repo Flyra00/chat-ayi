@@ -5,8 +5,6 @@ VisualStudioVersion = 17.14.36915.13 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChatAyi", "ChatAyi\ChatAyi.csproj", "{A6F786C0-5A4C-4AA6-9B94-559A10947493}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ChatAyi.Api", "ChatAyi.Api\ChatAyi.Api.csproj", "{8F6E585B-909A-4E8E-90C1-5D6E8D605B0F}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -19,10 +17,6 @@ Global
 		{A6F786C0-5A4C-4AA6-9B94-559A10947493}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A6F786C0-5A4C-4AA6-9B94-559A10947493}.Release|Any CPU.Build.0 = Release|Any CPU
 		{A6F786C0-5A4C-4AA6-9B94-559A10947493}.Release|Any CPU.Deploy.0 = Release|Any CPU
-		{8F6E585B-909A-4E8E-90C1-5D6E8D605B0F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{8F6E585B-909A-4E8E-90C1-5D6E8D605B0F}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{8F6E585B-909A-4E8E-90C1-5D6E8D605B0F}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{8F6E585B-909A-4E8E-90C1-5D6E8D605B0F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

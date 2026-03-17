@@ -72,8 +72,25 @@ public static class MauiProgram
                 Timeout = TimeSpan.FromSeconds(20)
             };
 
+            var baseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
+            return new SearxngSearchClient(http, baseUrl ?? "https://searx.be");
+        });
+
+        builder.Services.AddSingleton(sp =>
+        {
+            var handler = new SocketsHttpHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                ConnectTimeout = TimeSpan.FromSeconds(8)
+            };
+            var http = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(20)
+            };
+
+            var searxng = sp.GetRequiredService<SearxngSearchClient>();
             var ddg = sp.GetRequiredService<DdgSearchClient>();
-            return new FreeSearchClient(ddg, http);
+            return new FreeSearchClient(searxng, http, ddg);
         });
 
         builder.Services.AddSingleton(sp =>

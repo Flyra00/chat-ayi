@@ -5,13 +5,16 @@ namespace ChatAyi.Services;
 
 public sealed class FreeSearchClient
 {
-    private readonly DdgSearchClient _ddg;
+    private const int StableMaxResults = 5;
+    private readonly SearxngSearchClient _searxng;
+    private readonly DdgSearchClient _ddgFallback;
     private readonly HttpClient _http;
 
-    public FreeSearchClient(DdgSearchClient ddg, HttpClient http)
+    public FreeSearchClient(SearxngSearchClient searxng, HttpClient http, DdgSearchClient ddgFallback = null)
     {
-        _ddg = ddg;
+        _searxng = searxng;
         _http = http;
+        _ddgFallback = ddgFallback;
     }
 
     public sealed record SearchResult(string Title, string Url, string Snippet, string Source);
@@ -20,43 +23,73 @@ public sealed class FreeSearchClient
     {
         query = (query ?? string.Empty).Trim();
         if (query.Length == 0) return new List<SearchResult>();
-        maxResults = Math.Clamp(maxResults, 1, 10);
+        maxResults = Math.Clamp(maxResults, 1, StableMaxResults);
 
-        // 1) DuckDuckGo Instant Answer
+        var combined = new List<SearchResult>();
+
+        // 1) SearXNG search
         try
         {
-            var ddg = await _ddg.SearchAsync(query, maxResults, ct);
-            if (ddg.Count > 0)
-                return ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")).ToList();
+            var searxng = await _searxng.SearchAsync(query, maxResults, ct);
+            var mapped = FilterResults(
+                searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
+                maxResults);
+            combined.AddRange(mapped);
         }
         catch
         {
             // ignore
         }
 
-        // 2) GitHub repositories search (unauth, rate-limited)
-        try
+        // 2) DuckDuckGo fallback/fill (existing provider)
+        if (_ddgFallback is not null && combined.Count < maxResults)
         {
-            var gh = await SearchGitHubAsync(query, Math.Min(5, maxResults), ct);
-            if (gh.Count > 0)
-                return gh;
-        }
-        catch
-        {
-            // ignore
+            try
+            {
+                var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
+                var mapped = FilterResults(
+                    ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
+                    maxResults);
+                AppendMissingDiverse(combined, mapped, maxResults);
+            }
+            catch
+            {
+                // ignore
+            }
         }
 
-        // 3) Wikipedia OpenSearch
-        try
+        // 3) GitHub repositories search (unauth, rate-limited)
+        if (combined.Count < maxResults)
         {
-            var wiki = await SearchWikipediaAsync(query, Math.Min(5, maxResults), ct);
-            if (wiki.Count > 0)
-                return wiki;
+            try
+            {
+                var gh = await SearchGitHubAsync(query, Math.Min(5, maxResults), ct);
+                gh = FilterResults(gh, maxResults);
+                AppendMissingDiverse(combined, gh, maxResults);
+            }
+            catch
+            {
+                // ignore
+            }
         }
-        catch
+
+        // 4) Wikipedia OpenSearch
+        if (combined.Count < maxResults)
         {
-            // ignore
+            try
+            {
+                var wiki = await SearchWikipediaAsync(query, Math.Min(5, maxResults), ct);
+                wiki = FilterResults(wiki, maxResults);
+                AppendMissingDiverse(combined, wiki, maxResults);
+            }
+            catch
+            {
+                // ignore
+            }
         }
+
+        if (combined.Count > 0)
+            return combined.Take(maxResults).ToList();
 
         return new List<SearchResult>();
     }
@@ -132,5 +165,103 @@ public sealed class FreeSearchClient
         }
 
         return outList;
+    }
+
+    private static List<SearchResult> FilterResults(IEnumerable<SearchResult> input, int maxResults)
+    {
+        var outList = new List<SearchResult>();
+        var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var r in input)
+        {
+            if (r is null) continue;
+
+            var title = (r.Title ?? string.Empty).Trim();
+            var url = (r.Url ?? string.Empty).Trim();
+            var snippet = (r.Snippet ?? string.Empty).Trim();
+            var source = (r.Source ?? string.Empty).Trim();
+
+            if (url.Length == 0) continue;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) continue;
+            if (uri.Scheme is not ("http" or "https")) continue;
+
+            var urlKey = NormalizeUrlKey(uri);
+            if (!seenUrls.Add(urlKey)) continue;
+
+            var domainKey = NormalizeDomainKey(uri.Host);
+            if (domainKey.Length == 0) continue;
+            if (!seenDomains.Add(domainKey)) continue;
+
+            if (title.Length == 0) title = url;
+            if (title.Length < 3 && snippet.Length < 3) continue;
+
+            outList.Add(new SearchResult(title, url, snippet, source));
+            if (outList.Count >= maxResults) break;
+        }
+
+        return outList;
+    }
+
+    private static void AppendMissingDiverse(List<SearchResult> target, IEnumerable<SearchResult> source, int maxResults)
+    {
+        if (target.Count >= maxResults)
+            return;
+
+        var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var existing in target)
+        {
+            if (string.IsNullOrWhiteSpace(existing?.Url))
+                continue;
+
+            if (!Uri.TryCreate(existing.Url, UriKind.Absolute, out var uri))
+                continue;
+
+            seenUrls.Add(NormalizeUrlKey(uri));
+            var domain = NormalizeDomainKey(uri.Host);
+            if (domain.Length > 0)
+                seenDomains.Add(domain);
+        }
+
+        foreach (var item in source)
+        {
+            if (target.Count >= maxResults)
+                break;
+
+            if (item is null || string.IsNullOrWhiteSpace(item.Url))
+                continue;
+
+            if (!Uri.TryCreate(item.Url, UriKind.Absolute, out var uri))
+                continue;
+
+            var urlKey = NormalizeUrlKey(uri);
+            if (!seenUrls.Add(urlKey))
+                continue;
+
+            var domain = NormalizeDomainKey(uri.Host);
+            if (domain.Length == 0 || !seenDomains.Add(domain))
+                continue;
+
+            target.Add(item);
+        }
+    }
+
+    private static string NormalizeUrlKey(Uri uri)
+    {
+        var left = uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(uri.Query))
+            return left;
+
+        return left + uri.Query;
+    }
+
+    private static string NormalizeDomainKey(string host)
+    {
+        var value = (host ?? string.Empty).Trim().ToLowerInvariant();
+        if (value.StartsWith("www.", StringComparison.Ordinal))
+            value = value.Substring(4);
+        return value;
     }
 }
