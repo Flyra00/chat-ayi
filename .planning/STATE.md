@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-03-17)
 ## Current Position
 
 Phase: 1 of 5 (Persona and Session Foundation)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: In progress
-Last activity: 2026-03-17 - Completed 01-01 typed contracts and local session/profile persistence
+Last activity: 2026-03-17 - Completed 01-02 centralized prompt context assembly and chat-path wiring
 
-Progress: [##--------] 20%
+Progress: [####------] 40%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 10 min
-- Total execution time: 0.2 hours
+- Total plans completed: 2
+- Average duration: 9.5 min
+- Total execution time: 0.3 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-identitas-assistant-dan-fondasi-session | 1 | 10m | 10m |
+| 01-identitas-assistant-dan-fondasi-session | 2 | 19m | 9.5m |
 
 **Recent Trend:**
-- Last 5 plans: 10m
-- Trend: Stable
+- Last 5 plans: 10m, 9m
+- Trend: Stable (slightly faster)
 
 *Updated after each plan completion*
 
@@ -47,6 +47,9 @@ Recent decisions affecting current work:
 - [Phase 01-identitas-assistant-dan-fondasi-session]: Store persona/profile as normalized JSON payloads in Preferences for deterministic defaults.
 - [Phase 01-identitas-assistant-dan-fondasi-session]: Split session metadata catalog from transcript files to avoid expensive transcript scans.
 - [Phase 01-identitas-assistant-dan-fondasi-session]: Enforce safe session-id validation across transcript operations.
+- [Phase 01-identitas-assistant-dan-fondasi-session]: Treat system safety + app boundaries as a single locked first block, then persona, profile, session context, and user message via one Build entrypoint.
+- [Phase 01-identitas-assistant-dan-fondasi-session]: Use PersonaProfileStore and SessionCatalogStore at send-time so all command paths share the same persona/profile/session snapshot source.
+- [Phase 01-identitas-assistant-dan-fondasi-session]: Keep session summary optional and non-blocking by deriving bullets opportunistically from transcript system entries and always falling back to recent turns.
 
 ### Pending Todos
 
@@ -60,6 +63,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-17 05:54
-Stopped at: Completed 01-identitas-assistant-dan-fondasi-session-01-PLAN.md
+Last session: 2026-03-17 06:09
+Stopped at: Completed 01-identitas-assistant-dan-fondasi-session-02-PLAN.md
 Resume file: None

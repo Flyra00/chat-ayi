@@ -15,7 +15,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Session and Context
 
 - [x] **SESS-01**: User can create, continue, and switch conversation sessions with persistent history
-- [ ] **SESS-02**: User can resume a previous session and retain relevant conversational context
+- [x] **SESS-02**: User can resume a previous session and retain relevant conversational context
 - [x] **SESS-03**: User can view session metadata (title, last activity) to manage ongoing conversations
 
 ### Persistent Memory
@@ -79,7 +79,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PERS-01 | Phase 1 | Complete |
 | PERS-02 | Phase 1 | Complete |
 | SESS-01 | Phase 1 | Complete |
-| SESS-02 | Phase 1 | Pending |
+| SESS-02 | Phase 1 | Complete |
 | SESS-03 | Phase 1 | Complete |
 | MEM-01 | Phase 2 | Pending |
 | MEM-02 | Phase 2 | Pending |
