@@ -2299,7 +2299,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchFormat,
                     GetUnifiedVoiceInstruction(),
                     searchGroundingRules,
-                    "Search results (Jina primary + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
+                    "Search results (SearXNG primary + Jina booster + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 
                 var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(

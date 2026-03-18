@@ -52,11 +52,11 @@ Run from Visual Studio:
 ## Search and Browse Pipeline (Latest)
 
 - `/search` provider flow:
-  1. Jina Search (primary)
-  2. SearXNG (fill)
-  3. DDG (quality boost/fill)
-  4. GitHub search (fallback/fill)
-  5. Wikipedia (last fallback)
+  1. SearXNG (primary structured search)
+  2. Jina Search (booster/fill)
+  3. GitHub search (fallback/fill)
+  4. Wikipedia (last fallback)
+  5. DDG (last-resort recovery only)
 - Search hardening:
   - domain diversity, duplicate filtering, low-quality URL filtering
   - non-wiki browse candidates are attempted first

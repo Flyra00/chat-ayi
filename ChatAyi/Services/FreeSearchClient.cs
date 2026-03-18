@@ -30,34 +30,34 @@ public sealed class FreeSearchClient
 
         var combined = new List<SearchResult>();
 
-        // 1) Jina Search primary
+        // 1) SearXNG primary (structured JSON)
         try
         {
-            var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
-            Debug.WriteLine($"[SearchFlow] provider=jina raw={jina.Count}");
-            jina = FilterResults(jina, maxResults);
-            Debug.WriteLine($"[SearchFlow] provider=jina filtered={jina.Count}");
-            AppendMissingDiverse(combined, jina, maxResults);
-            Debug.WriteLine($"[SearchFlow] combined-after-jina={combined.Count}");
+            var searxng = await _searxng.SearchAsync(query, maxResults, ct);
+            Debug.WriteLine($"[SearchFlow] provider=searxng raw={searxng.Count}");
+            var mapped = FilterResults(
+                searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
+                maxResults);
+            Debug.WriteLine($"[SearchFlow] provider=searxng filtered={mapped.Count}");
+            AppendMissingDiverse(combined, mapped, maxResults);
+            Debug.WriteLine($"[SearchFlow] combined-after-searxng={combined.Count}");
         }
         catch
         {
             // ignore
         }
 
-        // 2) SearXNG fallback/fill
+        // 2) Jina Search booster/fill (non-backbone)
         if (combined.Count < 3 || HasLowDomainVariety(combined, minDistinctDomains: 3))
         {
             try
             {
-                var searxng = await _searxng.SearchAsync(query, maxResults, ct);
-                Debug.WriteLine($"[SearchFlow] provider=searxng raw={searxng.Count}");
-                var mapped = FilterResults(
-                    searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
-                    maxResults);
-                Debug.WriteLine($"[SearchFlow] provider=searxng filtered={mapped.Count}");
-                AppendMissingDiverse(combined, mapped, maxResults);
-                Debug.WriteLine($"[SearchFlow] combined-after-searxng={combined.Count}");
+                var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
+                Debug.WriteLine($"[SearchFlow] provider=jina raw={jina.Count}");
+                jina = FilterResults(jina, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=jina filtered={jina.Count}");
+                AppendMissingDiverse(combined, jina, maxResults);
+                Debug.WriteLine($"[SearchFlow] combined-after-jina={combined.Count}");
             }
             catch
             {
@@ -68,27 +68,7 @@ public sealed class FreeSearchClient
         var needsQualityBoost = HasLowDomainVariety(combined, minDistinctDomains: 3)
                                 || CountNonWikipedia(combined) < Math.Min(2, maxResults);
 
-        // 3) DuckDuckGo fallback/fill (existing provider)
-        if (_ddgFallback is not null && (combined.Count < maxResults || needsQualityBoost))
-        {
-            try
-            {
-                var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
-                Debug.WriteLine($"[SearchFlow] provider=ddg raw={ddg.Count}");
-                var mapped = FilterResults(
-                    ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
-                    maxResults);
-                Debug.WriteLine($"[SearchFlow] provider=ddg filtered={mapped.Count}");
-                AppendMissingDiverse(combined, mapped, maxResults);
-                Debug.WriteLine($"[SearchFlow] combined-after-ddg={combined.Count}");
-            }
-            catch
-            {
-                // ignore
-            }
-        }
-
-        // 4) GitHub repositories search (unauth, rate-limited)
+        // 3) GitHub repositories search (unauth, rate-limited)
         if (combined.Count < maxResults || needsQualityBoost)
         {
             try
@@ -106,7 +86,7 @@ public sealed class FreeSearchClient
             }
         }
 
-        // 5) Wikipedia OpenSearch
+        // 4) Wikipedia OpenSearch (last structured fallback)
         if (combined.Count < maxResults)
         {
             try
@@ -124,27 +104,39 @@ public sealed class FreeSearchClient
             }
         }
 
-        // Last guard: if final set is still wiki-only, try one more non-wiki fill from DDG.
-        if (_ddgFallback is not null && combined.Count > 0 && CountNonWikipedia(combined) == 0)
+        // 5) DDG last-resort fallback (kept for recovery only)
+        if (_ddgFallback is not null)
         {
-            try
+            var needsDdgRescue = combined.Count == 0
+                                || CountNonWikipedia(combined) == 0
+                                || (combined.Count < maxResults && HasLowDomainVariety(combined, minDistinctDomains: 2));
+
+            if (needsDdgRescue)
             {
-                var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
-                var mapped = FilterResults(
-                    ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
-                    maxResults);
-                var nonWiki = mapped
-                    .Where(x => Uri.TryCreate(x.Url, UriKind.Absolute, out var u) && !IsWikipedia(u))
-                    .ToList();
-                if (nonWiki.Count > 0)
+                try
                 {
-                    Debug.WriteLine($"[SearchFlow] nonwiki-rescue from=ddg count={nonWiki.Count}");
-                    AppendMissingDiverse(combined, nonWiki, maxResults);
+                    var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
+                    Debug.WriteLine($"[SearchFlow] provider=ddg raw={ddg.Count}");
+                    var mapped = FilterResults(
+                        ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
+                        maxResults);
+                    Debug.WriteLine($"[SearchFlow] provider=ddg filtered={mapped.Count}");
+
+                    var candidates = mapped;
+                    if (CountNonWikipedia(combined) == 0)
+                    {
+                        candidates = mapped
+                            .Where(x => Uri.TryCreate(x.Url, UriKind.Absolute, out var u) && !IsWikipedia(u))
+                            .ToList();
+                    }
+
+                    AppendMissingDiverse(combined, candidates, maxResults);
+                    Debug.WriteLine($"[SearchFlow] combined-after-ddg={combined.Count}");
                 }
-            }
-            catch
-            {
-                // ignore
+                catch
+                {
+                    // ignore
+                }
             }
         }
 
