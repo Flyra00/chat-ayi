@@ -1019,6 +1019,133 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                "Jangan campur ke 'kamu/Anda' atau gaya netral/formal kecuali user minta eksplisit.";
     }
 
+    private static string EnforceStrictSearchTemplate(string raw, IReadOnlyList<FreeSearchClient.SearchResult> results)
+    {
+        var text = (raw ?? string.Empty).Trim();
+        var facts = ExtractBulletLines(text, "[FAKTA]", "[INFERENSI]");
+        if (facts.Count == 0)
+            facts = FallbackBullets(text, 2);
+        if (facts.Count == 0)
+            facts.Add("Data sumber terbatas, jadi gua belum bisa kasih fakta kuat.");
+
+        var infer = ExtractBulletLines(text, "[INFERENSI]", "Sumber:");
+        if (infer.Count == 0)
+            infer.Add("Tidak ada inferensi tambahan.");
+
+        var ordered = (results ?? Array.Empty<FreeSearchClient.SearchResult>())
+            .OrderBy(x => IsWikipediaUrl(x?.Url) ? 1 : 0)
+            .Take(2)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("[FAKTA]");
+        foreach (var item in facts.Take(2))
+            sb.Append("- ").AppendLine(EnsureThirdPerson(item));
+        sb.AppendLine();
+        sb.AppendLine("[INFERENSI]");
+        foreach (var item in infer.Take(2))
+            sb.Append("- ").AppendLine(EnsureThirdPerson(item));
+        sb.AppendLine();
+        sb.AppendLine("Sumber:");
+
+        if (ordered.Count == 0)
+        {
+            sb.AppendLine("[1] Sumber valid tidak tersedia.");
+        }
+        else
+        {
+            for (var i = 0; i < ordered.Count; i++)
+                sb.Append('[').Append(i + 1).Append("] ").AppendLine(ordered[i].Url);
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string EnforceStrictBrowseTemplate(string raw, string sourceUrl)
+    {
+        var text = (raw ?? string.Empty).Trim();
+        var ringkasan = ExtractBulletLines(text, "[RINGKASAN]", "[POIN PENTING]");
+        if (ringkasan.Count == 0)
+            ringkasan = FallbackBullets(text, 3);
+        if (ringkasan.Count == 0)
+            ringkasan.Add("Konten halaman terbatas, jadi gua cuma bisa kasih ringkasan minimum.");
+
+        var poin = ExtractBulletLines(text, "[POIN PENTING]", "Sumber:");
+        if (poin.Count == 0)
+            poin = ringkasan.Take(2).ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("[RINGKASAN]");
+        foreach (var item in ringkasan.Take(3))
+            sb.Append("- ").AppendLine(item);
+        sb.AppendLine();
+        sb.AppendLine("[POIN PENTING]");
+        foreach (var item in poin.Take(3))
+            sb.Append("- ").AppendLine(item);
+        sb.AppendLine();
+        sb.AppendLine("Sumber:");
+        sb.Append("[1] ").AppendLine(string.IsNullOrWhiteSpace(sourceUrl) ? "-" : sourceUrl.Trim());
+        return sb.ToString().TrimEnd();
+    }
+
+    private static List<string> ExtractBulletLines(string text, string startMarker, string endMarker)
+    {
+        var source = (text ?? string.Empty);
+        var start = source.IndexOf(startMarker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+            return new List<string>();
+
+        start += startMarker.Length;
+        var end = source.Length;
+        if (!string.IsNullOrWhiteSpace(endMarker))
+        {
+            var idx = source.IndexOf(endMarker, start, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+                end = idx;
+        }
+
+        var body = source.Substring(start, Math.Max(0, end - start));
+        var lines = body
+            .Split('\n')
+            .Select(x => x.Trim())
+            .Where(x => x.Length > 0)
+            .Select(x => x.StartsWith("- ", StringComparison.Ordinal) ? x.Substring(2).Trim() : x)
+            .Where(x => x.Length > 0)
+            .Where(x => !x.StartsWith("[", StringComparison.Ordinal))
+            .ToList();
+
+        return lines;
+    }
+
+    private static List<string> FallbackBullets(string text, int maxItems)
+    {
+        var lines = (text ?? string.Empty)
+            .Split('\n')
+            .Select(x => x.Trim())
+            .Where(x => x.Length >= 12)
+            .Where(x => !x.StartsWith("[", StringComparison.Ordinal))
+            .Where(x => !x.StartsWith("Sumber", StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.StartsWith("- ", StringComparison.Ordinal) ? x.Substring(2).Trim() : x)
+            .Distinct(StringComparer.Ordinal)
+            .Take(Math.Max(1, maxItems))
+            .ToList();
+
+        return lines;
+    }
+
+    private static string EnsureThirdPerson(string line)
+    {
+        var value = (line ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return value;
+
+        value = value.Replace("Gua ", "Subjek ini ", StringComparison.OrdinalIgnoreCase)
+                     .Replace("Gue ", "Subjek ini ", StringComparison.OrdinalIgnoreCase)
+                     .Replace("Aku ", "Subjek ini ", StringComparison.OrdinalIgnoreCase)
+                     .Replace("Saya ", "Subjek ini ", StringComparison.OrdinalIgnoreCase);
+        return value;
+    }
+
     private static string GetStrictSearchTemplateInstruction()
     {
         var sb = new StringBuilder();
@@ -2227,7 +2354,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 if (searchCaptured.Length > 0)
                 {
-                    await AppendSessionRecordAsync(sessionId, "assistant", searchCaptured.ToString(), searchModel, string.Empty, _cts.Token);
+                    var strictSearch = EnforceStrictSearchTemplate(searchCaptured.ToString(), results);
+                    assistant.Content = strictSearch;
+                    await AppendSessionRecordAsync(sessionId, "assistant", strictSearch, searchModel, string.Empty, _cts.Token);
                 }
 
                 return;
@@ -2349,7 +2478,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 if (browseCaptured.Length > 0)
                 {
-                    await AppendSessionRecordAsync(sessionId, "assistant", browseCaptured.ToString(), browseModel, string.Empty, _cts.Token);
+                    var strictBrowse = EnforceStrictBrowseTemplate(browseCaptured.ToString(), page.Url);
+                    assistant.Content = strictBrowse;
+                    await AppendSessionRecordAsync(sessionId, "assistant", strictBrowse, browseModel, string.Empty, _cts.Token);
                 }
 
                 return;

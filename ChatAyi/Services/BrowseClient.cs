@@ -25,6 +25,17 @@ public sealed class BrowseClient
 
         Debug.WriteLine($"[BrowseFlow] start url={uri}");
 
+        if (TryParseGithubRepoRoot(uri, out var owner, out var repo))
+        {
+            var repoReadme = await TryFetchGithubRepoReadmeAsync(owner, repo, ct);
+            if (repoReadme is not null)
+            {
+                Debug.WriteLine($"[BrowseFlow] path=github-readme success repo={owner}/{repo}");
+                return repoReadme;
+            }
+            Debug.WriteLine($"[BrowseFlow] path=github-readme fallback-to-normal repo={owner}/{repo}");
+        }
+
         var jinaPage = await TryFetchWithJinaAsync(uri, ct);
         if (jinaPage is not null)
         {
@@ -140,6 +151,66 @@ public sealed class BrowseClient
             Debug.WriteLine($"[BrowseFlow] jina extracted chars={text.Length} url={originalUri}");
             return new BrowsePage(originalUri.ToString(), title, Truncate(text, MaxBrowseChars));
         }
+    }
+
+    private async Task<BrowsePage> TryFetchGithubRepoReadmeAsync(string owner, string repo, CancellationToken ct)
+    {
+        try
+        {
+            var apiUrl = $"https://api.github.com/repos/{owner}/{repo}/readme";
+            using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
+            req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
+            req.Headers.TryAddWithoutValidation("Accept", "application/vnd.github.raw");
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            if (!resp.IsSuccessStatusCode)
+                return null;
+
+            var raw = await resp.Content.ReadAsStringAsync(timeoutCts.Token);
+            var text = NormalizeWhitespace(raw);
+            if (!IsReadableEnough(text, minChars: 80) || LooksLikeBlockedOrNoisy(text))
+                return null;
+
+            var repoUrl = $"https://github.com/{owner}/{repo}";
+            var title = $"{owner}/{repo} README";
+            return new BrowsePage(repoUrl, title, Truncate(text, MaxBrowseChars));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryParseGithubRepoRoot(Uri uri, out string owner, out string repo)
+    {
+        owner = string.Empty;
+        repo = string.Empty;
+
+        if (uri is null)
+            return false;
+
+        var host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
+        if (host.StartsWith("www.", StringComparison.Ordinal))
+            host = host.Substring(4);
+
+        if (!host.Equals("github.com", StringComparison.Ordinal))
+            return false;
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim())
+            .Where(x => x.Length > 0)
+            .ToArray();
+
+        if (segments.Length != 2)
+            return false;
+
+        owner = segments[0];
+        repo = segments[1];
+        return owner.Length > 0 && repo.Length > 0;
     }
 
     private static bool TryNormalizeUrl(string raw, out Uri uri)

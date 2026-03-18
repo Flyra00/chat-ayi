@@ -33,14 +33,43 @@ Run from Visual Studio:
 
 - Multi-provider chat (Cerebras, NVIDIA Integrate, Inception)
 - Session-based conversations
-- Local profile/persona + memory support
-- `/search` command with hybrid web search:
-  - primary: SearXNG
-  - fill/fallback: DuckDuckGo, GitHub, Wikipedia
+- Local profile/persona + explicit personal memory (`/memory`)
+- `/search` command with hybrid web search + grounded answer template
+- `/browse` command with Jina Reader primary fetch and concise Indonesian output
+
+## Runtime Behavior (Latest)
+
+- Voice contract is unified across normal chat, `/search`, and `/browse`:
+  - Indonesian casual style with consistent `gua/lu`
+  - avoid mixed style (`kamu/Anda/netral`) unless user explicitly requests
+- Context contamination hardening:
+  - command turns are excluded from active context snapshot for normal chat, `/search`, and `/browse`
+  - UI history remains intact, but prompt context is filtered
+- Memory boundary is explicit-only:
+  - `/remember` is disabled
+  - memory writes use explicit flows (`/memory add|update|delete` or explicit natural save intent)
+
+## Search and Browse Pipeline (Latest)
+
+- `/search` provider flow:
+  1. Jina Search (primary)
+  2. SearXNG (fill)
+  3. DDG (quality boost/fill)
+  4. GitHub search (fallback/fill)
+  5. Wikipedia (last fallback)
+- Search hardening:
+  - domain diversity, duplicate filtering, low-quality URL filtering
+  - non-wiki browse candidates are attempted first
+  - wiki-only rescue step tries to pull non-wiki items from DDG
+- `/browse` fetch flow:
+  1. Jina Reader (`r.jina.ai`) primary
+  2. direct HTTP fallback
+  - blocked/noisy pages fail honestly (no fake success)
+  - output forced concise, Indonesian, and paraphrased when source is English
 
 ## Search Provider Configuration
 
-`/search` uses SearXNG by default.
+`/search` uses SearXNG as configurable provider in the hybrid stack.
 
 - Default base URL: `https://searx.be`
 - Optional override via environment variable:
@@ -61,6 +90,26 @@ SearXNG request format used by app:
 dotnet build ChatAyi/ChatAyi.csproj -f net8.0-android
 dotnet build ChatAyi/ChatAyi.csproj -f net8.0-windows10.0.19041.0
 ```
+
+## Commands
+
+- `/search <query>` - web-grounded answer with strict output template:
+  - `[FAKTA]`
+  - `[INFERENSI]`
+  - `Sumber:`
+- `/browse <url> [question]` - summarize page evidence in Indonesian
+- `/memory list|add|update|delete|on|off|status` - explicit personal memory control
+- `/remember` - disabled (explicit-only memory policy)
+
+## Debug Visibility
+
+The app now includes lightweight runtime tracing via `Debug.WriteLine` for:
+
+- routing branch (`normal-chat`, `search`, `browse`, etc.)
+- search provider raw/filtered result counts
+- search filter drop reasons (duplicate domain/url, low-quality source, etc.)
+- browse path (`jina` vs `fallback-http`) and rejection reasons
+- context filter counts (command turns removed from active prompt context)
 
 ## Security Notes
 
