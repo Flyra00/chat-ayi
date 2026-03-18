@@ -26,6 +26,7 @@ public sealed class FreeSearchClient
         query = (query ?? string.Empty).Trim();
         if (query.Length == 0) return new List<SearchResult>();
         maxResults = Math.Clamp(maxResults, 1, StableMaxResults);
+        var candidateFetch = Math.Clamp(maxResults * 2, maxResults, 10);
         Debug.WriteLine($"[SearchFlow] query='{query}' maxResults={maxResults}");
 
         var combined = new List<SearchResult>();
@@ -37,7 +38,7 @@ public sealed class FreeSearchClient
             Debug.WriteLine($"[SearchFlow] provider=searxng raw={searxng.Count}");
             var mapped = FilterResults(
                 searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
-                maxResults);
+                candidateFetch);
             Debug.WriteLine($"[SearchFlow] provider=searxng filtered={mapped.Count}");
             AppendMissingDiverse(combined, mapped, maxResults);
             Debug.WriteLine($"[SearchFlow] combined-after-searxng={combined.Count}");
@@ -52,9 +53,9 @@ public sealed class FreeSearchClient
         {
             try
             {
-                var jina = await TrySearchWithJinaAsync(query, maxResults, ct);
+                var jina = await TrySearchWithJinaAsync(query, candidateFetch, ct);
                 Debug.WriteLine($"[SearchFlow] provider=jina raw={jina.Count}");
-                jina = FilterResults(jina, maxResults);
+                jina = FilterResults(jina, candidateFetch);
                 Debug.WriteLine($"[SearchFlow] provider=jina filtered={jina.Count}");
                 AppendMissingDiverse(combined, jina, maxResults);
                 Debug.WriteLine($"[SearchFlow] combined-after-jina={combined.Count}");
@@ -73,9 +74,9 @@ public sealed class FreeSearchClient
         {
             try
             {
-                var gh = await SearchGitHubAsync(query, Math.Min(5, maxResults), ct);
+                var gh = await SearchGitHubAsync(query, Math.Min(8, candidateFetch), ct);
                 Debug.WriteLine($"[SearchFlow] provider=github raw={gh.Count}");
-                gh = FilterResults(gh, maxResults);
+                gh = FilterResults(gh, candidateFetch);
                 Debug.WriteLine($"[SearchFlow] provider=github filtered={gh.Count}");
                 AppendMissingDiverse(combined, gh, maxResults);
                 Debug.WriteLine($"[SearchFlow] combined-after-github={combined.Count}");
@@ -91,9 +92,9 @@ public sealed class FreeSearchClient
         {
             try
             {
-                var wiki = await SearchWikipediaAsync(query, Math.Min(5, maxResults), ct);
+                var wiki = await SearchWikipediaAsync(query, Math.Min(8, candidateFetch), ct);
                 Debug.WriteLine($"[SearchFlow] provider=wikipedia raw={wiki.Count}");
-                wiki = FilterResults(wiki, maxResults);
+                wiki = FilterResults(wiki, candidateFetch);
                 Debug.WriteLine($"[SearchFlow] provider=wikipedia filtered={wiki.Count}");
                 AppendMissingDiverse(combined, wiki, maxResults);
                 Debug.WriteLine($"[SearchFlow] combined-after-wikipedia={combined.Count}");
@@ -105,38 +106,32 @@ public sealed class FreeSearchClient
         }
 
         // 5) DDG last-resort fallback (kept for recovery only)
-        if (_ddgFallback is not null)
+        if (_ddgFallback is not null && combined.Count == 0)
         {
-            var needsDdgRescue = combined.Count == 0
-                                || CountNonWikipedia(combined) == 0
-                                || (combined.Count < maxResults && HasLowDomainVariety(combined, minDistinctDomains: 2));
-
-            if (needsDdgRescue)
+            try
             {
-                try
-                {
-                    var ddg = await _ddgFallback.SearchAsync(query, maxResults, ct);
-                    Debug.WriteLine($"[SearchFlow] provider=ddg raw={ddg.Count}");
-                    var mapped = FilterResults(
-                        ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
-                        maxResults);
-                    Debug.WriteLine($"[SearchFlow] provider=ddg filtered={mapped.Count}");
+                var ddg = await _ddgFallback.SearchAsync(query, candidateFetch, ct);
+                Debug.WriteLine($"[SearchFlow] provider=ddg raw={ddg.Count}");
+                var mapped = FilterResults(
+                    ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
+                    candidateFetch);
+                Debug.WriteLine($"[SearchFlow] provider=ddg filtered={mapped.Count}");
 
-                    var candidates = mapped;
-                    if (CountNonWikipedia(combined) == 0)
-                    {
-                        candidates = mapped
-                            .Where(x => Uri.TryCreate(x.Url, UriKind.Absolute, out var u) && !IsWikipedia(u))
-                            .ToList();
-                    }
+                var candidates = mapped
+                    .Where(x => Uri.TryCreate(x.Url, UriKind.Absolute, out var u) && !IsWikipedia(u))
+                    .ToList();
 
-                    AppendMissingDiverse(combined, candidates, maxResults);
-                    Debug.WriteLine($"[SearchFlow] combined-after-ddg={combined.Count}");
-                }
-                catch
+                if (candidates.Count == 0)
                 {
-                    // ignore
+                    candidates = mapped;
                 }
+
+                AppendMissingDiverse(combined, candidates, maxResults);
+                Debug.WriteLine($"[SearchFlow] combined-after-ddg={combined.Count}");
+            }
+            catch
+            {
+                // ignore
             }
         }
 

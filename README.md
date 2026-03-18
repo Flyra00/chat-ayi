@@ -56,7 +56,7 @@ Run from Visual Studio:
   2. Jina Search (booster/fill)
   3. GitHub search (fallback/fill)
   4. Wikipedia (last fallback)
-  5. DDG (last-resort recovery only)
+  5. DDG (emergency fallback only when earlier providers return empty)
 - Search hardening:
   - domain diversity, duplicate filtering, low-quality URL filtering
   - non-wiki browse candidates are attempted first
