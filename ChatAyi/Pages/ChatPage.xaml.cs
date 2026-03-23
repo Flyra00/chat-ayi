@@ -2209,7 +2209,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 List<FreeSearchClient.SearchResult> results;
                 try
                 {
-                    results = await _search.SearchAsync(searchQuery, maxResults: 5, _cts.Token);
+                    results = await _search.SearchAsync(searchQuery, maxResults: 6, _cts.Token);
                 }
                 catch (Exception ex)
                 {
@@ -2223,28 +2223,44 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     return;
                 }
 
-                // Combine search + browse: prefer non-wiki pages first and fetch up to three successful pages.
-                var pages = new List<(int Index, BrowseClient.BrowsePage Page)>();
-                var browseCandidates = BuildSearchBrowseCandidateOrder(results);
-                foreach (var idx in browseCandidates)
+                var orderedCandidates = BuildSearchBrowseCandidateOrder(results);
+                var browsedPages = new List<BrowseClient.BrowsePage>();
+                var nonWikiSuccess = 0;
+                var attempts = 0;
+                const int maxAttempts = 6;
+                const int targetSuccess = 3;
+                const int targetNonWiki = 2;
+
+                foreach (var candidate in orderedCandidates)
                 {
-                    if (pages.Count >= 3)
+                    if (attempts >= maxAttempts)
                         break;
+
+                    attempts++;
 
                     try
                     {
-                        var p = await _browse.FetchAsync(results[idx].Url, _cts.Token);
-                        pages.Add((idx + 1, p));
+                        var page = await _browse.FetchAsync(results[candidate].Url, _cts.Token);
+                        if (page is null || string.IsNullOrWhiteSpace(page.Text))
+                            continue;
+
+                        browsedPages.Add(page);
+
+                        if (!IsWikipediaUrl(results[candidate].Url))
+                            nonWikiSuccess++;
+
+                        if (browsedPages.Count >= targetSuccess && nonWikiSuccess >= targetNonWiki)
+                            break;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Keep trying other candidates if one source fails to browse.
+                        Debug.WriteLine($"[SearchBrowse] skip url={results[candidate].Url} error={ex.Message}");
                     }
                 }
 
                 var sourcesBlock = new StringBuilder();
-                var sourceOrder = BuildSearchBrowseCandidateOrder(results);
-                foreach (var idx in sourceOrder.Take(4))
+                var sourceOrder = orderedCandidates;
+                foreach (var idx in sourceOrder.Take(5))
                 {
                     var r = results[idx];
                     sourcesBlock.Append('[').Append(idx + 1).Append("] ");
@@ -2254,13 +2270,12 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     if (!string.IsNullOrWhiteSpace(r.Source)) sourcesBlock.AppendLine("Source: " + r.Source);
                     sourcesBlock.AppendLine();
                 }
-                if (results.Count > 4)
-                    sourcesBlock.AppendLine($"(Sumber tambahan disingkat: {results.Count - 4} item tidak ditampilkan)");
+                if (results.Count > 5)
+                    sourcesBlock.AppendLine($"(Sumber tambahan disingkat: {results.Count - 5} item tidak ditampilkan)");
 
                 var pagesBlock = new StringBuilder();
-                foreach (var (idx, page) in pages)
+                foreach (var page in browsedPages)
                 {
-                    pagesBlock.Append('[').Append(idx).Append("] ");
                     pagesBlock.AppendLine(page.Url);
                     if (!string.IsNullOrWhiteSpace(page.Title)) pagesBlock.AppendLine(page.Title);
                     pagesBlock.AppendLine();
@@ -2275,30 +2290,32 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var searchThinking = GetThinkingInstruction();
                 var searchFormat = GetStrictSearchTemplateInstruction();
                 var searchSnapshot = await BuildSessionContextSnapshotForSearchAsync(sessionId, _cts.Token);
-                var searchGroundingRules =
-                    "Grounding rules (search mode):\n" +
-                    "- Jawab hanya dari sumber yang diberikan di bawah (search results + browsed excerpts).\n" +
-                    "- Jangan pakai pengetahuan umum/model jika tidak didukung sumber.\n" +
-                    "- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.\n" +
-                    "- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).\n" +
-                    "- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.\n" +
-                    "- Jika sumber didominasi wiki sementara sumber non-wiki tipis/gagal di-browse, tulis keterbatasan data secara eksplisit di [FAKTA].\n" +
-                    "- Voice wajib konsisten gaya ChatAyi: pakai gua/lu, jangan campur kamu/Anda/gaya netral.\n" +
-                    "- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.\n\n" +
-                    "[STRICT OUTPUT RULES - IDENTITY SAFETY]\n" +
-                    "- Kamu adalah ChatAyi, bukan subjek yang dibahas.\n" +
-                    "- Dilarang menjawab seolah-olah kamu adalah orang yang sedang dibahas.\n" +
-                    "- Semua jawaban HARUS menggunakan sudut pandang pihak ketiga.\n" +
-                    "- BENAR: 'Windah Basudara adalah...'\n" +
-                    "- SALAH: 'Gua adalah...', 'Saya adalah...'\n" +
-                    "- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.\n" +
-                    "- Pelanggaran aturan ini dianggap jawaban salah.";
+                var searchGroundingRules = new StringBuilder();
+                searchGroundingRules.AppendLine("Grounding rules (search mode):");
+                searchGroundingRules.AppendLine("- Jawab hanya dari sumber yang diberikan di bawah (search results + browsed excerpts).");
+                searchGroundingRules.AppendLine("- Jangan pakai pengetahuan umum/model jika tidak didukung sumber.");
+                searchGroundingRules.AppendLine("- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.");
+                searchGroundingRules.AppendLine("- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).");
+                searchGroundingRules.AppendLine("- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.");
+                searchGroundingRules.AppendLine("- Jika sumber didominasi wiki sementara sumber non-wiki tipis/gagal di-browse, tulis keterbatasan data secara eksplisit di [FAKTA].");
+                searchGroundingRules.AppendLine("- Voice wajib konsisten gaya ChatAyi: pakai gua/lu, jangan campur kamu/Anda/gaya netral.");
+                searchGroundingRules.AppendLine("- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.");
+                searchGroundingRules.AppendLine("- Jika sumber yang berhasil dipakai sangat terbatas atau didominasi satu sumber, nyatakan keterbatasan data secara eksplisit di bagian [FAKTA] atau [INFERENSI].");
+                searchGroundingRules.AppendLine();
+                searchGroundingRules.AppendLine("[STRICT OUTPUT RULES - IDENTITY SAFETY]");
+                searchGroundingRules.AppendLine("- Kamu adalah ChatAyi, bukan subjek yang dibahas.");
+                searchGroundingRules.AppendLine("- Dilarang menjawab seolah-olah kamu adalah orang yang sedang dibahas.");
+                searchGroundingRules.AppendLine("- Semua jawaban HARUS menggunakan sudut pandang pihak ketiga.");
+                searchGroundingRules.AppendLine("- BENAR: 'Windah Basudara adalah...'");
+                searchGroundingRules.AppendLine("- SALAH: 'Gua adalah...', 'Saya adalah...'");
+                searchGroundingRules.AppendLine("- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.");
+                searchGroundingRules.AppendLine("- Pelanggaran aturan ini dianggap jawaban salah.");
                 var searchSafety = BuildSafetyAndBoundariesInstruction(
                     "Gunakan hanya bukti dari sumber web yang diberikan. Wajib Bahasa Indonesia. Setiap klaim faktual wajib sitasi [1], [2], dst. Jangan roleplay sebagai subjek pembahasan. Voice wajib gua/lu konsisten.",
                     searchThinking,
                     searchFormat,
                     GetUnifiedVoiceInstruction(),
-                    searchGroundingRules,
+                    searchGroundingRules.ToString(),
                     "Search results (SearXNG primary + Jina booster + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
                     pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
 

@@ -7,7 +7,7 @@ namespace ChatAyi.Services;
 
 public sealed class FreeSearchClient
 {
-    private const int StableMaxResults = 5;
+    private const int StableMaxResults = 6;
     private readonly SearxngSearchClient _searxng;
     private readonly DdgSearchClient _ddgFallback;
     private readonly HttpClient _http;
@@ -27,126 +27,109 @@ public sealed class FreeSearchClient
         if (query.Length == 0) return new List<SearchResult>();
         maxResults = Math.Clamp(maxResults, 1, StableMaxResults);
         var candidateFetch = Math.Clamp(maxResults * 2, maxResults, 10);
-        Debug.WriteLine($"[SearchFlow] query='{query}' maxResults={maxResults}");
 
         var combined = new List<SearchResult>();
+        const int minHealthyResults = 4;
+        const int minUniqueDomains = 3;
+        const int minHealthyNonWiki = 2;
 
-        // 1) SearXNG primary (structured JSON)
+        // 1) SearXNG primary
         try
         {
-            var searxng = await _searxng.SearchAsync(query, maxResults, ct);
-            Debug.WriteLine($"[SearchFlow] provider=searxng raw={searxng.Count}");
+            var searxng = await _searxng.SearchAsync(query, candidateFetch, ct);
             var mapped = FilterResults(
                 searxng.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "searxng")),
                 candidateFetch);
-            Debug.WriteLine($"[SearchFlow] provider=searxng filtered={mapped.Count}");
             AppendMissingDiverse(combined, mapped, maxResults);
-            Debug.WriteLine($"[SearchFlow] combined-after-searxng={combined.Count}");
+            Debug.WriteLine($"[SearchFlow] provider=searxng combined={combined.Count}");
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            Debug.WriteLine($"[SearchFlow] provider=searxng error={ex.Message}");
         }
 
-        // 2) Jina Search booster/fill (non-backbone)
-        if (combined.Count < 3 || HasLowDomainVariety(combined, minDistinctDomains: 3))
+        // 2) Jina Search booster only
+        if (NeedsEnrichment(combined, minHealthyResults, minUniqueDomains, minHealthyNonWiki))
         {
             try
             {
                 var jina = await TrySearchWithJinaAsync(query, candidateFetch, ct);
-                Debug.WriteLine($"[SearchFlow] provider=jina raw={jina.Count}");
-                jina = FilterResults(jina, candidateFetch);
-                Debug.WriteLine($"[SearchFlow] provider=jina filtered={jina.Count}");
-                AppendMissingDiverse(combined, jina, maxResults);
-                Debug.WriteLine($"[SearchFlow] combined-after-jina={combined.Count}");
+                var mapped = FilterResults(jina, candidateFetch);
+                AppendMissingDiverse(combined, mapped, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=jina combined={combined.Count}");
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore
+                Debug.WriteLine($"[SearchFlow] provider=jina error={ex.Message}");
             }
         }
 
-        var needsQualityBoost = HasLowDomainVariety(combined, minDistinctDomains: 3)
-                                || CountNonWikipedia(combined) < Math.Min(2, maxResults);
-
-        // 3) GitHub repositories search (unauth, rate-limited)
-        if (combined.Count < maxResults || needsQualityBoost)
+        // 3) GitHub fallback
+        if (NeedsEnrichment(combined, minHealthyResults, minUniqueDomains, minHealthyNonWiki))
         {
             try
             {
                 var gh = await SearchGitHubAsync(query, Math.Min(8, candidateFetch), ct);
-                Debug.WriteLine($"[SearchFlow] provider=github raw={gh.Count}");
-                gh = FilterResults(gh, candidateFetch);
-                Debug.WriteLine($"[SearchFlow] provider=github filtered={gh.Count}");
-                AppendMissingDiverse(combined, gh, maxResults);
-                Debug.WriteLine($"[SearchFlow] combined-after-github={combined.Count}");
+                var mapped = FilterResults(gh, candidateFetch);
+                AppendMissingDiverse(combined, mapped, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=github combined={combined.Count}");
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore
+                Debug.WriteLine($"[SearchFlow] provider=github error={ex.Message}");
             }
         }
 
-        // 4) Wikipedia OpenSearch (last structured fallback)
-        if (combined.Count < maxResults)
+        // 4) Wikipedia last resort only
+        if (NeedsEnrichment(combined, minHealthyResults, minUniqueDomains, minHealthyNonWiki))
         {
             try
             {
                 var wiki = await SearchWikipediaAsync(query, Math.Min(8, candidateFetch), ct);
-                Debug.WriteLine($"[SearchFlow] provider=wikipedia raw={wiki.Count}");
-                wiki = FilterResults(wiki, candidateFetch);
-                Debug.WriteLine($"[SearchFlow] provider=wikipedia filtered={wiki.Count}");
-                AppendMissingDiverse(combined, wiki, maxResults);
-                Debug.WriteLine($"[SearchFlow] combined-after-wikipedia={combined.Count}");
+                var mapped = FilterResults(wiki, candidateFetch);
+                AppendMissingDiverse(combined, mapped, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=wikipedia combined={combined.Count}");
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore
+                Debug.WriteLine($"[SearchFlow] provider=wikipedia error={ex.Message}");
             }
         }
 
-        // 5) DDG last-resort fallback (kept for recovery only)
+        // 5) DDG emergency fallback only when everything else returns empty.
         if (_ddgFallback is not null && combined.Count == 0)
         {
             try
             {
                 var ddg = await _ddgFallback.SearchAsync(query, candidateFetch, ct);
-                Debug.WriteLine($"[SearchFlow] provider=ddg raw={ddg.Count}");
                 var mapped = FilterResults(
                     ddg.Select(r => new SearchResult(r.Title, r.Url, r.Snippet, "ddg")),
                     candidateFetch);
-                Debug.WriteLine($"[SearchFlow] provider=ddg filtered={mapped.Count}");
-
-                var candidates = mapped
-                    .Where(x => Uri.TryCreate(x.Url, UriKind.Absolute, out var u) && !IsWikipedia(u))
-                    .ToList();
-
-                if (candidates.Count == 0)
-                {
-                    candidates = mapped;
-                }
-
-                AppendMissingDiverse(combined, candidates, maxResults);
-                Debug.WriteLine($"[SearchFlow] combined-after-ddg={combined.Count}");
+                AppendMissingDiverse(combined, mapped, maxResults);
+                Debug.WriteLine($"[SearchFlow] provider=ddg-emergency combined={combined.Count}");
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore
+                Debug.WriteLine($"[SearchFlow] provider=ddg-emergency error={ex.Message}");
             }
         }
 
-        if (combined.Count > 0)
-        {
-            var sourceCounts = string.Join(", ",
-                combined.GroupBy(x => string.IsNullOrWhiteSpace(x.Source) ? "unknown" : x.Source)
-                    .Select(g => $"{g.Key}:{g.Count()}"));
-            Debug.WriteLine($"[SearchFlow] final={combined.Count} sources=[{sourceCounts}]");
-            return combined.Take(maxResults).ToList();
-        }
+        return combined.Take(maxResults).ToList();
+    }
 
-        Debug.WriteLine("[SearchFlow] final=0");
+    private static bool NeedsEnrichment(
+        IReadOnlyCollection<SearchResult> items,
+        int minHealthyResults,
+        int minUniqueDomains,
+        int minHealthyNonWiki)
+    {
+        if (items is null || items.Count < minHealthyResults)
+            return true;
 
-        return new List<SearchResult>();
+        if (HasLowDomainVariety(items, minUniqueDomains))
+            return true;
+
+        return CountNonWikipedia(items) < minHealthyNonWiki;
     }
 
     private async Task<List<SearchResult>> TrySearchWithJinaAsync(string query, int maxResults, CancellationToken ct)
