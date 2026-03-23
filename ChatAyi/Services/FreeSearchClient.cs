@@ -19,10 +19,10 @@ public sealed class FreeSearchClient
 
     public async Task<List<SearchResult>> SearchAsync(string query, int maxResults, CancellationToken ct)
     {
-        maxResults = Math.Clamp(maxResults, 1, 10);
+        maxResults = Math.Clamp(maxResults, 1, 12);
 
         var intent = _intentClassifier.Classify(query);
-        var candidates = await _providerMux.SearchCandidatesAsync(query, Math.Max(6, maxResults), intent, ct);
+        var candidates = await _providerMux.SearchCandidatesAsync(query, Math.Max(8, maxResults), intent, ct);
 
         return candidates
             .Take(maxResults)

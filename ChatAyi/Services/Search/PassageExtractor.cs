@@ -8,7 +8,7 @@ public sealed class PassageExtractor
         string query,
         IReadOnlyList<EvidencePage> pages,
         int maxPerPage = 2,
-        int maxTotal = 8)
+        int maxTotal = 10)
     {
         var outList = new List<EvidencePassage>();
         var q = Tokenize(query);
@@ -112,6 +112,10 @@ public sealed class PassageExtractor
         if (raw.Length > 0 && text.Contains(raw, StringComparison.Ordinal))
             score += 6;
 
+        var title = (page.Title ?? string.Empty).ToLowerInvariant();
+        if (raw.Length > 0 && title.Contains(raw, StringComparison.Ordinal))
+            score += 0.5;
+
         var passageTokens = Tokenize(text);
         var overlap = queryTokens.Count == 0
             ? 0
@@ -120,7 +124,7 @@ public sealed class PassageExtractor
         score += overlap * 1.5;
 
         if (!SearchUrlHelpers.IsWikipediaUrl(page.Url))
-            score += 0.5;
+            score += 1.0;
 
         if (page.Source.Equals("searxng", StringComparison.OrdinalIgnoreCase))
             score += 0.25;

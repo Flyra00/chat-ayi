@@ -8,6 +8,14 @@ public enum SearchIntent
     CodeRepo
 }
 
+public enum SearchHealthStatus
+{
+    Healthy,
+    WeakEvidence,
+    WikiHeavy,
+    NoEvidence
+}
+
 public sealed record SearchCandidate(
     string Title,
     string Url,
@@ -29,8 +37,29 @@ public sealed record EvidencePassage(
     string Text,
     double Score);
 
+public sealed record SearchHealth(
+    bool IsHealthy,
+    SearchHealthStatus Status,
+    string Reason);
+
+public sealed record SearchDiagnostics(
+    int CandidateCount,
+    int NonWikiCandidateCount,
+    int PageCount,
+    int NonWikiPageCount,
+    int PassageCount,
+    int NonWikiPassageCount,
+    int FetchAttempts,
+    IReadOnlyList<string> Notes);
+
+public sealed record EvidenceFetchResult(
+    IReadOnlyList<EvidencePage> Pages,
+    int Attempts);
+
 public sealed record SearchGroundingBundle(
     SearchIntent Intent,
     IReadOnlyList<SearchCandidate> Candidates,
     IReadOnlyList<EvidencePage> Pages,
-    IReadOnlyList<EvidencePassage> Passages);
+    IReadOnlyList<EvidencePassage> Passages,
+    SearchHealth Health,
+    SearchDiagnostics Diagnostics);

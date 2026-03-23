@@ -29,7 +29,7 @@ public sealed class SearchProviderMux
         if (query.Length == 0)
             return Array.Empty<SearchCandidate>();
 
-        maxCandidates = Math.Clamp(Math.Max(maxCandidates, 6), 6, 10);
+        maxCandidates = Math.Clamp(Math.Max(maxCandidates, 8), 8, 12);
         var combined = new List<SearchCandidate>();
 
         // 1) SearXNG primary
@@ -79,7 +79,7 @@ public sealed class SearchProviderMux
         {
             try
             {
-                var wiki = await SearchWikipediaAsync(query, Math.Min(2, maxCandidates), intent, ct);
+                var wiki = await SearchWikipediaAsync(query, 1, intent, ct);
                 MergeCandidates(combined, wiki, maxCandidates, intent);
                 Debug.WriteLine($"[SearchMux] after-wikipedia count={combined.Count}");
             }
@@ -328,9 +328,9 @@ public sealed class SearchProviderMux
 
     private static bool NeedsMoreCandidates(IReadOnlyList<SearchCandidate> items, SearchIntent intent)
     {
-        const int minCount = 4;
-        const int minDomains = 3;
-        var minNonWiki = intent == SearchIntent.PersonEntity ? 2 : 2;
+        const int minCount = 6;
+        const int minDomains = 4;
+        var minNonWiki = intent == SearchIntent.PersonEntity ? 3 : 3;
 
         if (items.Count < minCount)
             return true;
@@ -429,7 +429,7 @@ public sealed class SearchProviderMux
 
         if (SearchUrlHelpers.IsWikipediaUrl(uri.AbsoluteUri))
         {
-            score += intent == SearchIntent.PersonEntity ? -1 : -2;
+            score += intent == SearchIntent.PersonEntity ? -3 : -2;
         }
 
         if (snippet.Length >= 80)

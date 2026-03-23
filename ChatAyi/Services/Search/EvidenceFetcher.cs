@@ -12,21 +12,17 @@ public sealed class EvidenceFetcher
         _browse = browse;
     }
 
-    public async Task<IReadOnlyList<EvidencePage>> FetchAsync(
-        string query,
+    public async Task<EvidenceFetchResult> FetchAsync(
         IReadOnlyList<SearchCandidate> candidates,
+        int maxAttempts,
+        int targetPages,
+        int maxPagesPerDomain,
         CancellationToken ct)
     {
-        var ordered = (candidates ?? Array.Empty<SearchCandidate>())
-            .OrderBy(c => SearchUrlHelpers.IsWikipediaUrl(c?.Url) ? 1 : 0)
-            .ThenByDescending(c => c?.Score ?? 0)
-            .ToList();
+        var ordered = (candidates ?? Array.Empty<SearchCandidate>()).ToList();
 
         var pages = new List<EvidencePage>();
         var perDomain = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-        const int maxAttempts = 10;
-        const int targetPages = 6;
 
         var attempts = 0;
         foreach (var candidate in ordered)
@@ -44,7 +40,7 @@ public sealed class EvidenceFetcher
                 continue;
 
             var current = perDomain.TryGetValue(domain, out var value) ? value : 0;
-            if (current >= 2)
+            if (current >= maxPagesPerDomain)
                 continue;
 
             try
@@ -71,7 +67,7 @@ public sealed class EvidenceFetcher
             }
         }
 
-        return pages;
+        return new EvidenceFetchResult(pages, attempts);
     }
 
     private static string NormalizePageText(string text)

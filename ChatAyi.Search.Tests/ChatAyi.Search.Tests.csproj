@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\ChatAyi\Services\Search\SearchContracts.cs" Link="Search\SearchContracts.cs" />
+    <Compile Include="..\ChatAyi\Services\Search\SearchUrlHelpers.cs" Link="Search\SearchUrlHelpers.cs" />
+    <Compile Include="..\ChatAyi\Services\Search\SearchIntentClassifier.cs" Link="Search\SearchIntentClassifier.cs" />
+    <Compile Include="..\ChatAyi\Services\Search\SearchHealthEvaluator.cs" Link="Search\SearchHealthEvaluator.cs" />
+    <Compile Include="..\ChatAyi\Services\Search\SearchGroundingComposer.cs" Link="Search\SearchGroundingComposer.cs" />
+    <Compile Include="..\ChatAyi\Services\Search\SearchOrchestrator.cs" Link="Search\SearchOrchestrator.cs" />
+  </ItemGroup>
+
+</Project>

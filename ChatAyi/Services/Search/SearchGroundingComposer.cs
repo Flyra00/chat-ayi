@@ -8,11 +8,17 @@ public sealed class SearchGroundingComposer
     {
         var sb = new StringBuilder();
 
-        var sources = (bundle?.Pages ?? Array.Empty<EvidencePage>())
+        var passageSources = (bundle?.Passages ?? Array.Empty<EvidencePassage>())
+            .Select(p => new SearchCandidate(p.Title, p.Url, string.Empty, p.Source, p.Score));
+
+        var sources = passageSources
+            .Concat((bundle?.Pages ?? Array.Empty<EvidencePage>())
             .Select(p => new SearchCandidate(p.Title, p.Url, string.Empty, p.Source, 0))
+            )
             .Concat(bundle?.Candidates ?? Array.Empty<SearchCandidate>())
             .GroupBy(x => SearchUrlHelpers.NormalizeUrlKey(x.Url), StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
+            .OrderByDescending(x => x.Score)
             .Take(maxSources)
             .ToList();
 

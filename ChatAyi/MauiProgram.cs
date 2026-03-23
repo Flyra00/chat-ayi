@@ -92,7 +92,7 @@ public static class MauiProgram
             };
 
             var searxng = sp.GetRequiredService<SearxngSearchClient>();
-            var ddg = sp.GetService<DdgSearchClient>();
+            var ddg = sp.GetRequiredService<DdgSearchClient>();
             return new SearchProviderMux(searxng, http, ddg);
         });
 
@@ -117,6 +117,7 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<EvidenceFetcher>();
         builder.Services.AddSingleton<PassageExtractor>();
+        builder.Services.AddSingleton<SearchHealthEvaluator>();
         builder.Services.AddSingleton<SearchGroundingComposer>();
         builder.Services.AddSingleton<SearchOrchestrator>();
         builder.Services.AddSingleton<LocalMemoryStore>();

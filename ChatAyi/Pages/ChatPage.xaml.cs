@@ -546,14 +546,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         _browse = services?.GetService<BrowseClient>()
                   ?? new BrowseClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
         _searchOrchestrator = services?.GetService<SearchOrchestrator>()
-                              ?? new SearchOrchestrator(
-                                  new SearchIntentClassifier(),
-                                  new SearchProviderMux(
-                                      new SearxngSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, "https://searx.be"),
-                                      new HttpClient { Timeout = TimeSpan.FromSeconds(20) },
-                                      new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) })),
-                                  new EvidenceFetcher(_browse),
-                                  new PassageExtractor());
+                              ?? CreateSearchOrchestratorFallback(_browse);
         _searchGroundingComposer = services?.GetService<SearchGroundingComposer>()
                                    ?? new SearchGroundingComposer();
         _memory = services?.GetService<LocalMemoryStore>() ?? new LocalMemoryStore();
@@ -569,6 +562,25 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         RetryOfflineQueueCommand = new Command(() => _ = ProcessOfflineQueueAsync());
 
         BindingContext = this;
+    }
+
+    private static SearchOrchestrator CreateSearchOrchestratorFallback(BrowseClient browse)
+    {
+        var searxBaseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL") ?? "https://searx.be";
+
+        var searxng = new SearxngSearchClient(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(20) },
+            searxBaseUrl);
+
+        var ddg = new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+        var mux = new SearchProviderMux(searxng, new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, ddg);
+
+        return new SearchOrchestrator(
+            new SearchIntentClassifier(),
+            mux,
+            new EvidenceFetcher(browse),
+            new PassageExtractor(),
+            new SearchHealthEvaluator());
     }
 
     private void NotifyOfflineUi()
@@ -1190,6 +1202,25 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                      .Replace("Aku ", "Subjek ini ", StringComparison.OrdinalIgnoreCase)
                      .Replace("Saya ", "Subjek ini ", StringComparison.OrdinalIgnoreCase);
         return value;
+    }
+
+    private static string PrependEvidenceLimitation(
+        string text,
+        SearchHealth health,
+        SearchDiagnostics diagnostics)
+    {
+        var line =
+            $"- Bukti web yang berhasil dikumpulkan masih terbatas ({health.Status}: {health.Reason}). " +
+            $"Non-wiki pages={diagnostics.NonWikiPageCount}, total pages={diagnostics.PageCount}, " +
+            $"non-wiki passages={diagnostics.NonWikiPassageCount}, total passages={diagnostics.PassageCount}.";
+
+        if (string.IsNullOrWhiteSpace(text))
+            return "[FAKTA]\n" + line + "\n\n[INFERENSI]\n- Belum aman menarik kesimpulan lebih jauh.\n\nSumber:";
+
+        if (text.Contains("[FAKTA]", StringComparison.Ordinal))
+            return text.Replace("[FAKTA]", "[FAKTA]\n" + line + "\n", StringComparison.Ordinal);
+
+        return "[FAKTA]\n" + line + "\n\n" + text;
     }
 
     private static string GetStrictSearchTemplateInstruction()
@@ -2260,6 +2291,13 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     return;
                 }
 
+                var unhealthy = !grounding.Health.IsHealthy;
+                if (grounding.Health.Status is SearchHealthStatus.NoEvidence)
+                {
+                    assistant.Content = "Search found candidates but evidence is still too weak/wiki-heavy.";
+                    return;
+                }
+
                 var results = grounding.Candidates
                     .Select(c => new FreeSearchClient.SearchResult(c.Title, c.Url, c.Snippet, c.Source))
                     .ToList();
@@ -2269,6 +2307,16 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 var sourcesBlock = _searchGroundingComposer.BuildSourcesBlock(grounding, maxSources: 8);
                 var evidenceBlock = _searchGroundingComposer.BuildEvidenceBlock(grounding, maxPassages: 8);
+                var healthBlock = new StringBuilder();
+                healthBlock.AppendLine("Search health:");
+                healthBlock.AppendLine($"- Status: {grounding.Health.Status}");
+                healthBlock.AppendLine($"- Reason: {grounding.Health.Reason}");
+                healthBlock.AppendLine($"- Candidate count: {grounding.Diagnostics.CandidateCount}");
+                healthBlock.AppendLine($"- Non-wiki candidates: {grounding.Diagnostics.NonWikiCandidateCount}");
+                healthBlock.AppendLine($"- Page count: {grounding.Diagnostics.PageCount}");
+                healthBlock.AppendLine($"- Non-wiki pages: {grounding.Diagnostics.NonWikiPageCount}");
+                healthBlock.AppendLine($"- Passage count: {grounding.Diagnostics.PassageCount}");
+                healthBlock.AppendLine($"- Non-wiki passages: {grounding.Diagnostics.NonWikiPassageCount}");
 
                 var searchModel = model;
                 var searchThinking = GetThinkingInstruction();
@@ -2302,6 +2350,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchFormat,
                     GetUnifiedVoiceInstruction(),
                     searchGroundingRules.ToString(),
+                    healthBlock.ToString().Trim(),
                     "Search sources (SearXNG primary + Jina booster + fallback providers):\n\n" + sourcesBlock,
                     "Evidence passages:\n\n" + evidenceBlock);
 
@@ -2358,6 +2407,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 if (searchCaptured.Length > 0)
                 {
                     var strictSearch = EnforceStrictSearchTemplate(searchCaptured.ToString(), results, browsedPages);
+                    if (unhealthy && !strictSearch.Contains("keterbatasan", StringComparison.OrdinalIgnoreCase))
+                    {
+                        strictSearch = PrependEvidenceLimitation(strictSearch, grounding.Health, grounding.Diagnostics);
+                    }
                     assistant.Content = strictSearch;
                     await AppendSessionRecordAsync(sessionId, "assistant", strictSearch, searchModel, string.Empty, _cts.Token);
                 }

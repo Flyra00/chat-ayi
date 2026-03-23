@@ -13,6 +13,14 @@ public static class SearchUrlHelpers
         return NormalizeDomainKey(uri.Host);
     }
 
+    public static bool IsSameUrl(string a, string b)
+    {
+        return string.Equals(
+            NormalizeUrlKey(a),
+            NormalizeUrlKey(b),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     public static bool IsWikipediaUrl(string url)
     {
         var host = TryGetDomain(url);
@@ -33,7 +41,7 @@ public static class SearchUrlHelpers
 
     public static string NormalizeUrlKey(string url)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(url ?? string.Empty, UriKind.Absolute, out var uri))
             return (url ?? string.Empty).Trim();
 
         var left = uri.GetLeftPart(UriPartial.Path).TrimEnd('/');

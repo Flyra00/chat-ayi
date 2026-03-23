@@ -65,7 +65,9 @@ Run from Visual Studio:
   4. Wikipedia (last fallback only if non-wiki coverage is still weak)
   5. DDG (not in normal path; emergency fallback only when everything else is empty)
 - Search hardening:
-  - target healthy result set: 4-6 items, >=3 unique domains, and >=2 non-wiki items
+  - health-aware evidence gate (NoEvidence / WeakEvidence / WikiHeavy / Healthy)
+  - non-wiki evidence quota is enforced before wiki is treated as sufficient
+  - target healthy result set: 6 candidates with >=4 unique domains and >=3 non-wiki candidates
   - domain diversity, duplicate filtering, low-quality URL filtering
   - evidence passages are prioritized over raw source list
   - non-wiki evidence is attempted first
@@ -81,6 +83,7 @@ Run from Visual Studio:
 `/search` uses SearXNG as configurable provider in the hybrid stack.
 
 - Default base URL: `https://searx.be`
+- Default base URL is best-effort public instance (quality/availability may vary)
 - Optional override via environment variable:
 
 ```bash
