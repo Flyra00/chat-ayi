@@ -82,7 +82,7 @@ public sealed class FreeSearchClient
         }
 
         // 4) Wikipedia last resort only
-        if (NeedsEnrichment(combined, minHealthyResults, minUniqueDomains, minHealthyNonWiki))
+        if (NeedsWikipediaFallback(combined, minHealthyResults, minUniqueDomains, minHealthyNonWiki))
         {
             try
             {
@@ -133,6 +133,23 @@ public sealed class FreeSearchClient
         return CountNonWikipedia(items) < minHealthyNonWiki;
     }
 
+    private static bool NeedsWikipediaFallback(
+        IReadOnlyCollection<SearchResult> items,
+        int minHealthyResults,
+        int minUniqueDomains,
+        int minHealthyNonWiki)
+    {
+        if (items is null || items.Count == 0)
+            return true;
+
+        // Wikipedia should only activate if non-wiki grounding is still weak.
+        if (CountNonWikipedia(items) < minHealthyNonWiki)
+            return true;
+
+        // Do not trigger wiki solely because total count is below max.
+        return items.Count < minHealthyResults && HasLowDomainVariety(items, minUniqueDomains);
+    }
+
     private static List<SearchResult> NormalizeJinaResults(IEnumerable<SearchResult> items)
     {
         var outList = new List<SearchResult>();
@@ -142,9 +159,8 @@ public sealed class FreeSearchClient
                 continue;
 
             var title = (item.Title ?? string.Empty).Trim();
-            var url = (item.Url ?? string.Empty).Trim();
+            var url = NormalizeJinaCandidateUrl(item.Url);
             var snippet = (item.Snippet ?? string.Empty).Trim();
-            var source = string.IsNullOrWhiteSpace(item.Source) ? "jina" : item.Source.Trim();
 
             if (url.Length == 0)
                 continue;
@@ -152,10 +168,10 @@ public sealed class FreeSearchClient
             if (title.Length == 0)
                 title = url;
 
-            if (snippet.Length == 0)
+            if (snippet.Length == 0 || snippet.Equals(url, StringComparison.OrdinalIgnoreCase))
                 snippet = title;
 
-            outList.Add(new SearchResult(title, url, snippet, source));
+            outList.Add(new SearchResult(title, url, snippet, "jina"));
         }
 
         return outList;
@@ -176,18 +192,22 @@ public sealed class FreeSearchClient
         if (string.IsNullOrWhiteSpace(raw))
             return new List<SearchResult>();
 
-        // Expected commonly in markdown-like format: [Title](https://...)
+        // Expected commonly in markdown-like format: [Title](https://...) - snippet
         var outList = new List<SearchResult>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var linkMatches = Regex.Matches(raw, "\\[(?<title>[^\\]]{2,200})\\]\\((?<url>https?://[^)\\s]+)\\)", RegexOptions.IgnoreCase);
+        var linkMatches = Regex.Matches(raw, "\\[(?<title>[^\\]]{2,200})\\]\\((?<url>https?://[^)\\s]+)\\)(?<tail>[^\\n]*)", RegexOptions.IgnoreCase);
         foreach (Match match in linkMatches)
         {
             var title = (match.Groups["title"].Value ?? string.Empty).Trim();
-            var link = (match.Groups["url"].Value ?? string.Empty).Trim();
+            var link = NormalizeJinaCandidateUrl(match.Groups["url"].Value);
             if (link.Length == 0 || !seen.Add(link))
                 continue;
 
-            outList.Add(new SearchResult(title.Length > 0 ? title : link, link, string.Empty, "jina"));
+            var snippet = CleanJinaText(match.Groups["tail"].Value);
+            if (snippet.Length == 0)
+                snippet = TryGetNeighborPlainLine(raw, match.Index + match.Length);
+
+            outList.Add(new SearchResult(title.Length > 0 ? title : link, link, snippet, "jina"));
             if (outList.Count >= maxResults)
                 break;
         }
@@ -195,8 +215,10 @@ public sealed class FreeSearchClient
         // Fallback parser for plain-text list lines containing URLs.
         if (outList.Count < Math.Min(3, maxResults))
         {
-            foreach (var line in raw.Split('\n'))
+            var lines = raw.Split('\n');
+            for (var i = 0; i < lines.Length; i++)
             {
+                var line = lines[i];
                 var trimmed = line.Trim();
                 if (trimmed.Length < 12)
                     continue;
@@ -205,18 +227,96 @@ public sealed class FreeSearchClient
                 if (!m.Success)
                     continue;
 
-                var link = (m.Groups["url"].Value ?? string.Empty).Trim().TrimEnd(')', ']', ',', '.');
+                var rawUrl = (m.Groups["url"].Value ?? string.Empty).Trim().TrimEnd(')', ']', ',', '.');
+                var link = NormalizeJinaCandidateUrl(rawUrl);
                 if (link.Length == 0 || !seen.Add(link))
                     continue;
 
-                var title = Regex.Replace(trimmed.Replace(link, " "), "^[-*\\d\\.)\\s]+", string.Empty).Trim();
-                outList.Add(new SearchResult(title.Length > 0 ? title : link, link, string.Empty, "jina"));
+                var title = Regex.Replace(trimmed.Replace(rawUrl, " "), "^[-*\\d\\.)\\s]+", string.Empty).Trim(' ', '-', ':', '|');
+                if (title.Length == 0 && i > 0)
+                    title = CleanJinaText(lines[i - 1]);
+
+                var snippet = i + 1 < lines.Length ? CleanJinaText(lines[i + 1]) : string.Empty;
+                if (snippet.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                    || snippet.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    snippet = string.Empty;
+                }
+
+                outList.Add(new SearchResult(title.Length > 0 ? title : link, link, snippet, "jina"));
                 if (outList.Count >= maxResults)
                     break;
             }
         }
 
         return outList;
+    }
+
+    private static string NormalizeJinaCandidateUrl(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return string.Empty;
+
+        value = value.TrimEnd(')', ']', ',', '.');
+
+        const string wrappedHttps = "https://r.jina.ai/https://";
+        const string wrappedHttp = "https://r.jina.ai/http://";
+        const string wrappedHttpAlt = "http://r.jina.ai/http://";
+        const string wrappedHttpsAlt = "http://r.jina.ai/https://";
+
+        if (value.StartsWith(wrappedHttps, StringComparison.OrdinalIgnoreCase))
+            value = "https://" + value.Substring(wrappedHttps.Length);
+        else if (value.StartsWith(wrappedHttp, StringComparison.OrdinalIgnoreCase))
+            value = "http://" + value.Substring(wrappedHttp.Length);
+        else if (value.StartsWith(wrappedHttpsAlt, StringComparison.OrdinalIgnoreCase))
+            value = "https://" + value.Substring(wrappedHttpsAlt.Length);
+        else if (value.StartsWith(wrappedHttpAlt, StringComparison.OrdinalIgnoreCase))
+            value = "http://" + value.Substring(wrappedHttpAlt.Length);
+
+        return value;
+    }
+
+    private static string CleanJinaText(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return string.Empty;
+
+        value = Regex.Replace(value, "^[-*\\d\\.)\\s:|]+", string.Empty).Trim();
+        if (value.Length > 280)
+            value = value.Substring(0, 280).TrimEnd();
+
+        return value;
+    }
+
+    private static string TryGetNeighborPlainLine(string raw, int startIndex)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        var start = Math.Clamp(startIndex, 0, raw.Length);
+        var tail = raw.Substring(start);
+        var inspected = 0;
+
+        foreach (var line in tail.Split('\n'))
+        {
+            if (inspected++ >= 3)
+                break;
+
+            var candidate = CleanJinaText(line);
+            if (candidate.Length == 0)
+                continue;
+            if (candidate.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || candidate.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return candidate;
+        }
+
+        return string.Empty;
     }
 
     private async Task<List<SearchResult>> SearchGitHubAsync(string query, int maxResults, CancellationToken ct)
@@ -617,13 +717,24 @@ public sealed class FreeSearchClient
             "kuliah", "dump", "tmp", "temp", "sandbox", "demo", "test"
         };
 
-        foreach (var token in lowValueTokens)
+        var segments = path
+            .Split(new[] { '/', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim())
+            .Where(x => x.Length > 0);
+
+        foreach (var segment in segments)
         {
-            if (path.Contains('/' + token, StringComparison.Ordinal)
-                || path.Contains(token + '-', StringComparison.Ordinal)
-                || path.Contains('-' + token, StringComparison.Ordinal))
+            foreach (var token in lowValueTokens)
             {
-                return true;
+                if (segment.Equals(token, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                if (segment.StartsWith(token, StringComparison.OrdinalIgnoreCase))
+                {
+                    var suffix = segment.Substring(token.Length);
+                    if (suffix.Length > 0 && suffix.Length <= 3 && suffix.All(char.IsDigit))
+                        return true;
+                }
             }
         }
 

@@ -1019,12 +1019,15 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                "Jangan campur ke 'kamu/Anda' atau gaya netral/formal kecuali user minta eksplisit.";
     }
 
-    private static string EnforceStrictSearchTemplate(string raw, IReadOnlyList<FreeSearchClient.SearchResult> results)
+    private static string EnforceStrictSearchTemplate(
+        string raw,
+        IReadOnlyList<FreeSearchClient.SearchResult> results,
+        IReadOnlyList<BrowseClient.BrowsePage> browsedPages)
     {
         var text = (raw ?? string.Empty).Trim();
         var facts = ExtractBulletLines(text, "[FAKTA]", "[INFERENSI]");
         if (facts.Count == 0)
-            facts = FallbackBullets(text, 2);
+            facts = FallbackBullets(text, 4);
         if (facts.Count == 0)
             facts.Add("Data sumber terbatas, jadi gua belum bisa kasih fakta kuat.");
 
@@ -1032,18 +1035,18 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         if (infer.Count == 0)
             infer.Add("Tidak ada inferensi tambahan.");
 
-        var ordered = (results ?? Array.Empty<FreeSearchClient.SearchResult>())
-            .OrderBy(x => IsWikipediaUrl(x?.Url) ? 1 : 0)
-            .Take(2)
-            .ToList();
+        var evidenceCount = Math.Max(results?.Count ?? 0, browsedPages?.Count ?? 0);
+        var maxFacts = Math.Clamp(evidenceCount, 2, 4);
+        var maxInfer = maxFacts >= 4 ? 3 : 2;
+        var ordered = BuildStrictSearchSourceUrls(results, browsedPages, maxSources: 4);
 
         var sb = new StringBuilder();
         sb.AppendLine("[FAKTA]");
-        foreach (var item in facts.Take(2))
+        foreach (var item in facts.Take(maxFacts))
             sb.Append("- ").AppendLine(EnsureThirdPerson(item));
         sb.AppendLine();
         sb.AppendLine("[INFERENSI]");
-        foreach (var item in infer.Take(2))
+        foreach (var item in infer.Take(maxInfer))
             sb.Append("- ").AppendLine(EnsureThirdPerson(item));
         sb.AppendLine();
         sb.AppendLine("Sumber:");
@@ -1055,10 +1058,45 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         else
         {
             for (var i = 0; i < ordered.Count; i++)
-                sb.Append('[').Append(i + 1).Append("] ").AppendLine(ordered[i].Url);
+                sb.Append('[').Append(i + 1).Append("] ").AppendLine(ordered[i]);
         }
 
         return sb.ToString().TrimEnd();
+    }
+
+    private static List<string> BuildStrictSearchSourceUrls(
+        IReadOnlyList<FreeSearchClient.SearchResult> results,
+        IReadOnlyList<BrowseClient.BrowsePage> browsedPages,
+        int maxSources)
+    {
+        var outList = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void TryAdd(string rawUrl)
+        {
+            if (outList.Count >= maxSources)
+                return;
+
+            if (!Uri.TryCreate(rawUrl ?? string.Empty, UriKind.Absolute, out var uri))
+                return;
+
+            if (uri.Scheme is not ("http" or "https"))
+                return;
+
+            var key = uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+            if (!seen.Add(key))
+                return;
+
+            outList.Add(uri.ToString());
+        }
+
+        foreach (var page in (browsedPages ?? Array.Empty<BrowseClient.BrowsePage>()).OrderBy(x => IsWikipediaUrl(x?.Url) ? 1 : 0))
+            TryAdd(page?.Url);
+
+        foreach (var result in (results ?? Array.Empty<FreeSearchClient.SearchResult>()).OrderBy(x => IsWikipediaUrl(x?.Url) ? 1 : 0))
+            TryAdd(result?.Url);
+
+        return outList;
     }
 
     private static string EnforceStrictBrowseTemplate(string raw, string sourceUrl)
@@ -1155,6 +1193,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         sb.AppendLine("- Gunakan sudut pandang pihak ketiga yang netral, bukan roleplay orang pertama.");
         sb.AppendLine("- Semua klaim di [FAKTA] wajib bersitasi [n] yang cocok dengan bagian Sumber.");
         sb.AppendLine("- Jika data sumber lemah/kurang/konflik, tulis keterbatasan data di [FAKTA].");
+        sb.AppendLine("- Jika bukti cukup, targetkan 3-4 bullet [FAKTA] agar jawaban tidak terlalu dangkal.");
         sb.AppendLine("- Jika inferensi tidak ada, wajib tulis tepat: '- Tidak ada inferensi tambahan.' di [INFERENSI].");
         sb.AppendLine("- Sebelum final, validasi output tetap mengikuti template ini.");
         sb.AppendLine();
@@ -1162,11 +1201,13 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         sb.AppendLine("[FAKTA]");
         sb.AppendLine("- <klaim faktual bersitasi [1]> ");
         sb.AppendLine("- <klaim faktual bersitasi [2]> ");
+        sb.AppendLine("- <klaim faktual tambahan jika tersedia [3]> ");
         sb.AppendLine("[INFERENSI]");
         sb.AppendLine("- <inferensi berbasis fakta>  ATAU  - Tidak ada inferensi tambahan.");
         sb.AppendLine("Sumber:");
         sb.AppendLine("[1] <url/sumber>");
         sb.AppendLine("[2] <url/sumber>");
+        sb.AppendLine("[3] <url/sumber opsional>");
         sb.AppendLine();
         sb.AppendLine("Jika tidak ada sumber valid sama sekali, tetap pakai template di atas dan jelaskan keterbatasan pada [FAKTA].");
         return sb.ToString().Trim();
@@ -2101,6 +2142,23 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                || host.EndsWith(".wikipedia.org", StringComparison.Ordinal);
     }
 
+    private static bool TryGetDomain(string url, out string domain)
+    {
+        domain = string.Empty;
+        if (!Uri.TryCreate(url ?? string.Empty, UriKind.Absolute, out var uri))
+            return false;
+
+        var host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
+        if (host.StartsWith("www.", StringComparison.Ordinal))
+            host = host.Substring(4);
+
+        if (host.Length == 0)
+            return false;
+
+        domain = host;
+        return true;
+    }
+
     public ObservableCollection<ChatMessage> Messages { get; }
 
     public bool IsSending => _isSending;
@@ -2225,11 +2283,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 var orderedCandidates = BuildSearchBrowseCandidateOrder(results);
                 var browsedPages = new List<BrowseClient.BrowsePage>();
+                var browsedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var nonWikiSuccess = 0;
                 var attempts = 0;
                 const int maxAttempts = 8;
-                const int targetSuccess = 3;
-                const int targetNonWiki = 2;
+                var nonWikiCandidates = orderedCandidates.Count(idx => !IsWikipediaUrl(results[idx].Url));
+                var targetSuccess = Math.Min(4, orderedCandidates.Count);
+                var targetNonWiki = Math.Min(3, nonWikiCandidates);
+                var targetDomains = Math.Min(3, targetSuccess);
 
                 foreach (var candidate in orderedCandidates)
                 {
@@ -2246,10 +2307,15 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                         browsedPages.Add(page);
 
+                        if (TryGetDomain(page.Url, out var domain))
+                            browsedDomains.Add(domain);
+
                         if (!IsWikipediaUrl(results[candidate].Url))
                             nonWikiSuccess++;
 
-                        if (browsedPages.Count >= targetSuccess && nonWikiSuccess >= targetNonWiki)
+                        if (browsedPages.Count >= targetSuccess
+                            && nonWikiSuccess >= targetNonWiki
+                            && browsedDomains.Count >= targetDomains)
                             break;
                     }
                     catch (Exception ex)
@@ -2371,7 +2437,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 if (searchCaptured.Length > 0)
                 {
-                    var strictSearch = EnforceStrictSearchTemplate(searchCaptured.ToString(), results);
+                    var strictSearch = EnforceStrictSearchTemplate(searchCaptured.ToString(), results, browsedPages);
                     assistant.Content = strictSearch;
                     await AppendSessionRecordAsync(sessionId, "assistant", strictSearch, searchModel, string.Empty, _cts.Token);
                 }

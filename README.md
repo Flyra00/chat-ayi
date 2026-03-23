@@ -53,11 +53,12 @@ Run from Visual Studio:
 
 - `/search` provider flow:
   1. SearXNG (primary structured search)
-  2. Jina Search (booster/fill)
-  3. GitHub search (fallback/fill)
-  4. Wikipedia (last fallback)
-  5. DDG (emergency fallback only when earlier providers return empty)
+  2. Jina Search (conditional booster only when result health is weak)
+  3. GitHub search (conditional fallback when still weak)
+  4. Wikipedia (last fallback only if non-wiki coverage is still weak)
+  5. DDG (not in normal path; emergency fallback only when everything else is empty)
 - Search hardening:
+  - target healthy result set: 4-6 items, >=3 unique domains, and >=2 non-wiki items
   - domain diversity, duplicate filtering, low-quality URL filtering
   - non-wiki browse candidates are attempted first
   - DDG is only used as emergency fallback when earlier providers return empty
