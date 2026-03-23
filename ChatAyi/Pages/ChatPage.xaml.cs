@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using ChatAyi.Models;
 using ChatAyi.Services;
+using ChatAyi.Services.Search;
 using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Networking;
 using Microsoft.Maui.Storage;
@@ -26,7 +27,8 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private const string EnableDcpKey = "ChatAyi.EnableDcp";
 
     private readonly ChatApiClient _api;
-    private readonly FreeSearchClient _search;
+    private readonly SearchOrchestrator _searchOrchestrator;
+    private readonly SearchGroundingComposer _searchGroundingComposer;
     private readonly BrowseClient _browse;
     private readonly LocalMemoryStore _memory;
     private readonly PersonalMemoryStore _personalMemoryStore;
@@ -541,13 +543,19 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     // Without it, HttpClient will drop the last segment (`v1`) and hit the wrong endpoint.
                     new HttpClient { BaseAddress = new Uri("https://integrate.api.nvidia.com/v1/"), Timeout = TimeSpan.FromMinutes(10) },
                     new HttpClient { BaseAddress = new Uri("https://api.inceptionlabs.ai"), Timeout = TimeSpan.FromMinutes(10) });
-        _search = services?.GetService<FreeSearchClient>()
-                  ?? new FreeSearchClient(
-                      new SearxngSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, "https://searx.be"),
-                      new HttpClient { Timeout = TimeSpan.FromSeconds(20) },
-                      new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) }));
         _browse = services?.GetService<BrowseClient>()
                   ?? new BrowseClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
+        _searchOrchestrator = services?.GetService<SearchOrchestrator>()
+                              ?? new SearchOrchestrator(
+                                  new SearchIntentClassifier(),
+                                  new SearchProviderMux(
+                                      new SearxngSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, "https://searx.be"),
+                                      new HttpClient { Timeout = TimeSpan.FromSeconds(20) },
+                                      new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) })),
+                                  new EvidenceFetcher(_browse),
+                                  new PassageExtractor());
+        _searchGroundingComposer = services?.GetService<SearchGroundingComposer>()
+                                   ?? new SearchGroundingComposer();
         _memory = services?.GetService<LocalMemoryStore>() ?? new LocalMemoryStore();
         _personalMemoryStore = services?.GetService<PersonalMemoryStore>() ?? new PersonalMemoryStore();
         _sessions = services?.GetService<LocalSessionStore>() ?? new LocalSessionStore();
@@ -1038,7 +1046,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         var evidenceCount = Math.Max(results?.Count ?? 0, browsedPages?.Count ?? 0);
         var maxFacts = Math.Clamp(evidenceCount, 2, 4);
         var maxInfer = maxFacts >= 4 ? 3 : 2;
-        var ordered = BuildStrictSearchSourceUrls(results, browsedPages, maxSources: 4);
+        var ordered = BuildStrictSearchSourceUrls(results, browsedPages, maxSources: 6);
 
         var sb = new StringBuilder();
         sb.AppendLine("[FAKTA]");
@@ -2111,24 +2119,6 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return true;
     }
 
-    private static List<int> BuildSearchBrowseCandidateOrder(IReadOnlyList<FreeSearchClient.SearchResult> results)
-    {
-        var nonWiki = new List<int>();
-        var wiki = new List<int>();
-
-        for (var i = 0; i < results.Count; i++)
-        {
-            var url = results[i]?.Url ?? string.Empty;
-            if (IsWikipediaUrl(url))
-                wiki.Add(i);
-            else
-                nonWiki.Add(i);
-        }
-
-        nonWiki.AddRange(wiki);
-        return nonWiki;
-    }
-
     private static bool IsWikipediaUrl(string url)
     {
         if (!Uri.TryCreate(url ?? string.Empty, UriKind.Absolute, out var uri))
@@ -2140,23 +2130,6 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
         return host.Equals("wikipedia.org", StringComparison.Ordinal)
                || host.EndsWith(".wikipedia.org", StringComparison.Ordinal);
-    }
-
-    private static bool TryGetDomain(string url, out string domain)
-    {
-        domain = string.Empty;
-        if (!Uri.TryCreate(url ?? string.Empty, UriKind.Absolute, out var uri))
-            return false;
-
-        var host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
-        if (host.StartsWith("www.", StringComparison.Ordinal))
-            host = host.Substring(4);
-
-        if (host.Length == 0)
-            return false;
-
-        domain = host;
-        return true;
     }
 
     public ObservableCollection<ChatMessage> Messages { get; }
@@ -2264,10 +2237,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 assistant.Content = "Searching...";
 
-                List<FreeSearchClient.SearchResult> results;
+                SearchGroundingBundle grounding;
                 try
                 {
-                    results = await _search.SearchAsync(searchQuery, maxResults: 6, _cts.Token);
+                    grounding = await _searchOrchestrator.RunAsync(searchQuery, _cts.Token);
                 }
                 catch (Exception ex)
                 {
@@ -2275,82 +2248,27 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     assistant.Content = "Search failed: " + ex.Message + (string.IsNullOrWhiteSpace(more) ? string.Empty : "\n" + more) + "\n\nTip: coba /browse <url> langsung.";
                     return;
                 }
-                if (results.Count == 0)
+                if (grounding.Candidates.Count == 0)
                 {
                     assistant.Content = "No results from search provider.";
                     return;
                 }
 
-                var orderedCandidates = BuildSearchBrowseCandidateOrder(results);
-                var browsedPages = new List<BrowseClient.BrowsePage>();
-                var browsedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var nonWikiSuccess = 0;
-                var attempts = 0;
-                const int maxAttempts = 8;
-                var nonWikiCandidates = orderedCandidates.Count(idx => !IsWikipediaUrl(results[idx].Url));
-                var targetSuccess = Math.Min(4, orderedCandidates.Count);
-                var targetNonWiki = Math.Min(3, nonWikiCandidates);
-                var targetDomains = Math.Min(3, targetSuccess);
-
-                foreach (var candidate in orderedCandidates)
+                if (grounding.Pages.Count == 0 || grounding.Passages.Count == 0)
                 {
-                    if (attempts >= maxAttempts)
-                        break;
-
-                    attempts++;
-
-                    try
-                    {
-                        var page = await _browse.FetchAsync(results[candidate].Url, _cts.Token);
-                        if (page is null || string.IsNullOrWhiteSpace(page.Text))
-                            continue;
-
-                        browsedPages.Add(page);
-
-                        if (TryGetDomain(page.Url, out var domain))
-                            browsedDomains.Add(domain);
-
-                        if (!IsWikipediaUrl(results[candidate].Url))
-                            nonWikiSuccess++;
-
-                        if (browsedPages.Count >= targetSuccess
-                            && nonWikiSuccess >= targetNonWiki
-                            && browsedDomains.Count >= targetDomains)
-                            break;
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[SearchBrowse] skip url={results[candidate].Url} error={ex.Message}");
-                    }
+                    assistant.Content = "Search found candidates but failed to extract enough evidence.";
+                    return;
                 }
 
-                var sourcesBlock = new StringBuilder();
-                var sourceOrder = orderedCandidates;
-                foreach (var idx in sourceOrder.Take(5))
-                {
-                    var r = results[idx];
-                    sourcesBlock.Append('[').Append(idx + 1).Append("] ");
-                    sourcesBlock.AppendLine(r.Title);
-                    sourcesBlock.AppendLine(r.Url);
-                    if (!string.IsNullOrWhiteSpace(r.Snippet)) sourcesBlock.AppendLine(r.Snippet);
-                    if (!string.IsNullOrWhiteSpace(r.Source)) sourcesBlock.AppendLine("Source: " + r.Source);
-                    sourcesBlock.AppendLine();
-                }
-                if (results.Count > 5)
-                    sourcesBlock.AppendLine($"(Sumber tambahan disingkat: {results.Count - 5} item tidak ditampilkan)");
+                var results = grounding.Candidates
+                    .Select(c => new FreeSearchClient.SearchResult(c.Title, c.Url, c.Snippet, c.Source))
+                    .ToList();
+                var browsedPages = grounding.Pages
+                    .Select(p => new BrowseClient.BrowsePage(p.Url, p.Title, p.Text))
+                    .ToList();
 
-                var pagesBlock = new StringBuilder();
-                foreach (var page in browsedPages)
-                {
-                    pagesBlock.AppendLine(page.Url);
-                    if (!string.IsNullOrWhiteSpace(page.Title)) pagesBlock.AppendLine(page.Title);
-                    pagesBlock.AppendLine();
-                    var excerpt = page.Text;
-                    if (excerpt.Length > 2200)
-                        excerpt = excerpt.Substring(0, 2200) + "\n\n[...excerpt dipotong untuk grounding ringkas...]";
-                    pagesBlock.AppendLine(excerpt);
-                    pagesBlock.AppendLine();
-                }
+                var sourcesBlock = _searchGroundingComposer.BuildSourcesBlock(grounding, maxSources: 8);
+                var evidenceBlock = _searchGroundingComposer.BuildEvidenceBlock(grounding, maxPassages: 8);
 
                 var searchModel = model;
                 var searchThinking = GetThinkingInstruction();
@@ -2358,7 +2276,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var searchSnapshot = await BuildSessionContextSnapshotForSearchAsync(sessionId, _cts.Token);
                 var searchGroundingRules = new StringBuilder();
                 searchGroundingRules.AppendLine("Grounding rules (search mode):");
-                searchGroundingRules.AppendLine("- Jawab hanya dari sumber yang diberikan di bawah (search results + browsed excerpts).");
+                searchGroundingRules.AppendLine("- Jawab hanya dari sources dan evidence passages yang diberikan di bawah.");
+                searchGroundingRules.AppendLine("- Evidence passages adalah dasar utama klaim fakta.");
+                searchGroundingRules.AppendLine("- Candidate URL tanpa evidence passage tidak boleh dipakai untuk klaim detail kecuali judul/snippet sangat eksplisit.");
                 searchGroundingRules.AppendLine("- Jangan pakai pengetahuan umum/model jika tidak didukung sumber.");
                 searchGroundingRules.AppendLine("- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.");
                 searchGroundingRules.AppendLine("- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).");
@@ -2382,8 +2302,8 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchFormat,
                     GetUnifiedVoiceInstruction(),
                     searchGroundingRules.ToString(),
-                    "Search results (SearXNG primary + Jina booster + fallback providers):\n\n" + sourcesBlock.ToString().Trim(),
-                    pagesBlock.Length > 0 ? "Browsed page excerpts:\n\n" + pagesBlock.ToString().Trim() : null);
+                    "Search sources (SearXNG primary + Jina booster + fallback providers):\n\n" + sourcesBlock,
+                    "Evidence passages:\n\n" + evidenceBlock);
 
                 var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
                     searchSafety,

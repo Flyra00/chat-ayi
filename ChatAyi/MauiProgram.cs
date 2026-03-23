@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using ChatAyi.Services;
+using ChatAyi.Services.Search;
 using System.Net;
 using System.Net.Http;
 
@@ -76,6 +77,8 @@ public static class MauiProgram
             return new SearxngSearchClient(http, baseUrl ?? "https://searx.be");
         });
 
+        builder.Services.AddSingleton<SearchIntentClassifier>();
+
         builder.Services.AddSingleton(sp =>
         {
             var handler = new SocketsHttpHandler
@@ -89,9 +92,14 @@ public static class MauiProgram
             };
 
             var searxng = sp.GetRequiredService<SearxngSearchClient>();
-            var ddg = sp.GetRequiredService<DdgSearchClient>();
-            return new FreeSearchClient(searxng, http, ddg);
+            var ddg = sp.GetService<DdgSearchClient>();
+            return new SearchProviderMux(searxng, http, ddg);
         });
+
+        builder.Services.AddSingleton(sp =>
+            new FreeSearchClient(
+                sp.GetRequiredService<SearchIntentClassifier>(),
+                sp.GetRequiredService<SearchProviderMux>()));
 
         builder.Services.AddSingleton(sp =>
         {
@@ -106,6 +114,11 @@ public static class MauiProgram
             };
             return new BrowseClient(http);
         });
+
+        builder.Services.AddSingleton<EvidenceFetcher>();
+        builder.Services.AddSingleton<PassageExtractor>();
+        builder.Services.AddSingleton<SearchGroundingComposer>();
+        builder.Services.AddSingleton<SearchOrchestrator>();
         builder.Services.AddSingleton<LocalMemoryStore>();
         builder.Services.AddSingleton<PersonalMemoryStore>();
         builder.Services.AddSingleton<LocalSessionStore>();
