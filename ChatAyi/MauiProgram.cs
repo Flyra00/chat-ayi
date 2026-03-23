@@ -74,7 +74,7 @@ public static class MauiProgram
             };
 
             var baseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
-            return new SearxngSearchClient(http, baseUrl ?? "https://searx.be");
+            return new SearxngSearchClient(http, baseUrl);
         });
 
         builder.Services.AddSingleton<SearchIntentClassifier>();

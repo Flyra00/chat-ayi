@@ -566,7 +566,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
     private static SearchOrchestrator CreateSearchOrchestratorFallback(BrowseClient browse)
     {
-        var searxBaseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL") ?? "https://searx.be";
+        var searxBaseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
 
         var searxng = new SearxngSearchClient(
             new HttpClient { Timeout = TimeSpan.FromSeconds(20) },

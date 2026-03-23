@@ -49,7 +49,7 @@ Run from Visual Studio:
   - `/remember` is disabled
   - memory writes use explicit flows (`/memory add|update|delete` or explicit natural save intent)
 
-## Search and Browse Pipeline (Latest)
+## Search and Browse Pipeline (Current)
 
 - `/search` uses evidence-based flow:
   1. intent classification
@@ -64,7 +64,7 @@ Run from Visual Studio:
   3. GitHub search (conditional fallback for code/docs intent when still weak)
   4. Wikipedia (last fallback only if non-wiki coverage is still weak)
   5. DDG (not in normal path; emergency fallback only when everything else is empty)
-- Search hardening:
+- Search hardening (current behavior):
   - health-aware evidence gate (NoEvidence / WeakEvidence / WikiHeavy / Healthy)
   - non-wiki evidence quota is enforced before wiki is treated as sufficient
   - target healthy result set: 6 candidates with >=4 unique domains and >=3 non-wiki candidates
@@ -72,6 +72,7 @@ Run from Visual Studio:
   - evidence passages are prioritized over raw source list
   - non-wiki evidence is attempted first
   - DDG is only used as emergency fallback when earlier providers return empty
+  - health-aware output depends on the orchestrator path used by `/search`
 - `/browse` fetch flow:
   1. Jina Reader (`r.jina.ai`) primary
   2. direct HTTP fallback

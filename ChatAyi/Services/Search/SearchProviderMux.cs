@@ -330,7 +330,7 @@ public sealed class SearchProviderMux
     {
         const int minCount = 6;
         const int minDomains = 4;
-        var minNonWiki = intent == SearchIntent.PersonEntity ? 3 : 3;
+        var minNonWiki = intent is SearchIntent.PersonEntity or SearchIntent.General ? 3 : 2;
 
         if (items.Count < minCount)
             return true;
