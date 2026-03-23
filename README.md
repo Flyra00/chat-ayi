@@ -60,7 +60,7 @@ Run from Visual Studio:
 - Search hardening:
   - domain diversity, duplicate filtering, low-quality URL filtering
   - non-wiki browse candidates are attempted first
-  - wiki-only rescue step tries to pull non-wiki items from DDG
+  - DDG is only used as emergency fallback when earlier providers return empty
 - `/browse` fetch flow:
   1. Jina Reader (`r.jina.ai`) primary
   2. direct HTTP fallback

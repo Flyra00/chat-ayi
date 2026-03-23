@@ -54,6 +54,7 @@ public sealed class FreeSearchClient
             try
             {
                 var jina = await TrySearchWithJinaAsync(query, candidateFetch, ct);
+                jina = NormalizeJinaResults(jina);
                 var mapped = FilterResults(jina, candidateFetch);
                 AppendMissingDiverse(combined, mapped, maxResults);
                 Debug.WriteLine($"[SearchFlow] provider=jina combined={combined.Count}");
@@ -130,6 +131,34 @@ public sealed class FreeSearchClient
             return true;
 
         return CountNonWikipedia(items) < minHealthyNonWiki;
+    }
+
+    private static List<SearchResult> NormalizeJinaResults(IEnumerable<SearchResult> items)
+    {
+        var outList = new List<SearchResult>();
+        foreach (var item in items ?? Enumerable.Empty<SearchResult>())
+        {
+            if (item is null)
+                continue;
+
+            var title = (item.Title ?? string.Empty).Trim();
+            var url = (item.Url ?? string.Empty).Trim();
+            var snippet = (item.Snippet ?? string.Empty).Trim();
+            var source = string.IsNullOrWhiteSpace(item.Source) ? "jina" : item.Source.Trim();
+
+            if (url.Length == 0)
+                continue;
+
+            if (title.Length == 0)
+                title = url;
+
+            if (snippet.Length == 0)
+                snippet = title;
+
+            outList.Add(new SearchResult(title, url, snippet, source));
+        }
+
+        return outList;
     }
 
     private async Task<List<SearchResult>> TrySearchWithJinaAsync(string query, int maxResults, CancellationToken ct)

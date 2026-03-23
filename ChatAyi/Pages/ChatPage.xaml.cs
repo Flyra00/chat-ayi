@@ -2227,7 +2227,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var browsedPages = new List<BrowseClient.BrowsePage>();
                 var nonWikiSuccess = 0;
                 var attempts = 0;
-                const int maxAttempts = 6;
+                const int maxAttempts = 8;
                 const int targetSuccess = 3;
                 const int targetNonWiki = 2;
 
