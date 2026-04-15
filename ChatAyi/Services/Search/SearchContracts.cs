@@ -11,6 +11,7 @@ public enum SearchIntent
 public enum SearchHealthStatus
 {
     Healthy,
+    Marginal,
     WeakEvidence,
     WikiHeavy,
     NoEvidence

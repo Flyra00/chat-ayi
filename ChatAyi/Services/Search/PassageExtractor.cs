@@ -12,6 +12,7 @@ public sealed class PassageExtractor
     {
         var outList = new List<EvidencePassage>();
         var q = Tokenize(query);
+        var isRecencySensitive = IsRecencySensitive(query);
 
         var passageIndex = 1;
         foreach (var page in pages ?? Array.Empty<EvidencePage>())
@@ -20,7 +21,7 @@ public sealed class PassageExtractor
                 .Select(p => new
                 {
                     Text = p,
-                    Score = ScorePassage(q, query, page, p)
+                    Score = ScorePassage(q, query, page, p, isRecencySensitive)
                 })
                 .Where(x => x.Score > 0)
                 .OrderByDescending(x => x.Score)
@@ -103,7 +104,8 @@ public sealed class PassageExtractor
         HashSet<string> queryTokens,
         string rawQuery,
         EvidencePage page,
-        string passage)
+        string passage,
+        bool isRecencySensitive)
     {
         var score = 0d;
         var text = (page.Title + " " + passage).ToLowerInvariant();
@@ -129,7 +131,51 @@ public sealed class PassageExtractor
         if (page.Source.Equals("searxng", StringComparison.OrdinalIgnoreCase))
             score += 0.25;
 
+        if (isRecencySensitive)
+        {
+            var years = Regex.Matches(text, @"\b(20[0-9]{2}|19[0-9]{2})\b")
+                .Select(m => int.Parse(m.Value))
+                .ToList();
+
+            if (years.Count > 0)
+            {
+                var maxYear = years.Max();
+                
+                // Recency bonus logic: newer years get higher score
+                if (maxYear >= 2026)
+                {
+                    score += 4.0;
+                    System.Diagnostics.Debug.WriteLine($"[PassageExtractor] Recency bonus applied: +4.00 (year {maxYear})");
+                }
+                else if (maxYear == 2025)
+                {
+                    score += 3.0;
+                    System.Diagnostics.Debug.WriteLine($"[PassageExtractor] Recency bonus applied: +3.00 (year {maxYear})");
+                }
+                else if (maxYear == 2024)
+                {
+                    score += 1.5;
+                    System.Diagnostics.Debug.WriteLine($"[PassageExtractor] Recency bonus applied: +1.50 (year {maxYear})");
+                }
+            }
+        }
+
         return score;
+    }
+
+    private static bool IsRecencySensitive(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return false;
+        var q = query.ToLowerInvariant();
+
+        return q.Contains("saat ini") || 
+               q.Contains("sekarang") || 
+               q.Contains("terbaru") || 
+               q.Contains("hari ini") ||
+               q.Contains("current") || 
+               q.Contains("latest") || 
+               q.Contains("now") ||
+               Regex.IsMatch(q, @"\b202[0-9]\b");
     }
 
     private static HashSet<string> Tokenize(string text)

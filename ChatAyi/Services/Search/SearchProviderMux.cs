@@ -89,11 +89,12 @@ public sealed class SearchProviderMux
             }
         }
 
-        // 5) DDG emergency only
-        if (combined.Count == 0 && _ddgFallback is not null)
+        // 5) DDG Booster
+        if (ShouldBoostWithDdg(combined, intent) && _ddgFallback is not null)
         {
             try
             {
+                Debug.WriteLine("[SearchMux] SearXNG/Jina results thin → boosting with DDG...");
                 var ddg = await SearchDdgAsync(query, maxCandidates, intent, ct);
                 MergeCandidates(combined, ddg, maxCandidates, intent);
                 Debug.WriteLine($"[SearchMux] after-ddg count={combined.Count}");
@@ -346,6 +347,17 @@ public sealed class SearchProviderMux
 
         var nonWiki = items.Count(x => !SearchUrlHelpers.IsWikipediaUrl(x.Url));
         return nonWiki < minNonWiki;
+    }
+
+    private static bool ShouldBoostWithDdg(IReadOnlyList<SearchCandidate> items, SearchIntent intent)
+    {
+        // 1. If we have very few high-quality candidates, definitely boost
+        if (items.Count < 4)
+            return true;
+
+        // 2. Otherwise, boost if we're still missing quotas (domains, count, non-wiki) 
+        // that could drop health down to WeakEvidence or Marginal later
+        return NeedsMoreCandidates(items, intent);
     }
 
     private static bool ShouldUseGitHub(SearchIntent intent)

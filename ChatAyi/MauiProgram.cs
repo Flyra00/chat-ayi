@@ -74,7 +74,9 @@ public static class MauiProgram
             };
 
             var baseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
-            return new SearxngSearchClient(http, baseUrl);
+            var fallbackRaw = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_FALLBACK_INSTANCES");
+            var fallbackInstances = SearxngSearchClient.ParseFallbackInstancesEnvVar(fallbackRaw);
+            return new SearxngSearchClient(http, baseUrl, fallbackInstances, TimeSpan.FromSeconds(8));
         });
 
         builder.Services.AddSingleton<SearchIntentClassifier>();

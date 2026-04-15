@@ -567,10 +567,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private static SearchOrchestrator CreateSearchOrchestratorFallback(BrowseClient browse)
     {
         var searxBaseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
+        var fallbackRaw = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_FALLBACK_INSTANCES");
+        var fallbackInstances = SearxngSearchClient.ParseFallbackInstancesEnvVar(fallbackRaw);
 
         var searxng = new SearxngSearchClient(
             new HttpClient { Timeout = TimeSpan.FromSeconds(20) },
-            searxBaseUrl);
+            searxBaseUrl,
+            fallbackInstances,
+            TimeSpan.FromSeconds(8));
 
         var ddg = new DdgSearchClient(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
         var mux = new SearchProviderMux(searxng, new HttpClient { Timeout = TimeSpan.FromSeconds(20) }, ddg);
@@ -1020,15 +1024,13 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
         var sb = new StringBuilder();
         sb.AppendLine("Format jawaban harus rapi dan ringkas:");
-        sb.AppendLine("- Gunakan heading singkat: 'Jawaban', 'Poin Penting'.");
+        sb.AppendLine("- Gunakan heading singkat jika berguna: 'Jawaban', 'Poin Penting'.");
         if (hasSources)
-            sb.AppendLine("- Untuk mode bersumber, WAJIB pakai format ini secara berurutan: [FAKTA], [INFERENSI], Sumber:.");
-        if (hasSources)
-            sb.AppendLine("- [FAKTA] hanya berisi klaim yang didukung sumber dan setiap klaim wajib punya sitasi [1], [2], dst.");
-        if (hasSources)
-            sb.AppendLine("- [INFERENSI] harus dipisah dari fakta. Jika tidak ada inferensi, tulis persis: [INFERENSI] Tidak ada inferensi tambahan.");
-        if (hasSources)
-            sb.AppendLine("- Bagian penutup wajib: 'Sumber:' lalu daftar minimal [1] ... sesuai data yang dipakai.");
+        {
+            sb.AppendLine("- Untuk mode bersumber, tulis jawaban sebagai paragraf natural yang mengalir.");
+            sb.AppendLine("- DILARANG pakai tag [FAKTA], [INFERENSI], atau format bullet template kaku.");
+            sb.AppendLine("- Sebutkan sumber secara natural di akhir jawaban.");
+        }
         sb.AppendLine("- Jangan mengarang repo/tautan/fakta. Jika tidak yakin, tulis 'Gua belum yakin' dan minta link / gunakan /browse.");
         return sb.ToString().Trim();
     }
@@ -1039,52 +1041,248 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                "Jangan campur ke 'kamu/Anda' atau gaya netral/formal kecuali user minta eksplisit.";
     }
 
-    private static string EnforceStrictSearchTemplate(
+    /// <summary>
+    /// Creates a search-safe copy of the persona that preserves the ChatAyi identity
+    /// (gua/lu voice, blak-blakan, sarkastik) but strips toxic/harmful directives
+    /// that would conflict with factual, grounded search output.
+    /// </summary>
+    private static AssistantPersona CreateSearchSafePersona(AssistantPersona original)
+    {
+        var p = (original ?? AssistantPersona.Default).Normalize();
+
+        // Preserve the core role statement but strip any toxic framing.
+        var safeRole = SanitizeDirectiveText(p.RoleStatement);
+
+        // Replace toxic directives with search-appropriate ones.
+        var safeDirectives = SanitizeDirectiveText(p.ResponseStyleDirectives);
+
+        // If sanitization stripped everything meaningful, use a safe default.
+        if (string.IsNullOrWhiteSpace(safeDirectives) || safeDirectives.Length < 20)
+        {
+            safeDirectives = "Selalu pakai Bahasa Indonesia gaul dengan gaya gua/lu. "
+                           + "Tetap santai, to the point, dan informatif. "
+                           + "Hindari gaya AI generik yang terlalu sopan, kaku, atau formal.";
+        }
+
+        // Tone is always "calm" for search — factual accuracy over entertainment.
+        return new AssistantPersona
+        {
+            RoleStatement = string.IsNullOrWhiteSpace(safeRole)
+                ? "Lu lagi ngobrol sama ChatAyi: asisten pribadi lu yang blak-blakan, realistis, dan tetep ngasih info yang akurat. Gaya ngobrol default gua/lu, santai, dan to the point."
+                : safeRole,
+            Tone = "calm",
+            ResponseStyleDirectives = safeDirectives
+        };
+    }
+
+    /// <summary>
+    /// Removes toxic/harmful phrases from a directive string while preserving
+    /// the casual voice and useful instructions.
+    /// </summary>
+    private static string SanitizeDirectiveText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        // Phrases that MUST be stripped — they cause fact-distorting or harmful output.
+        var toxicPhrases = new[]
+        {
+            "menghina martabat user",
+            "menghina martabat",
+            "mendorong putus asa",
+            "mendorong hopelessness",
+            "putus asa/hopelessness",
+            "menyuruh menyakiti diri",
+            "menyakiti diri",
+            "sering menghina",
+            "sering mendorong",
+            "sering menyuruh",
+            "menghina user",
+            "sarkas yang kuat :",
+            "sarkas yang kuat:",
+        };
+
+        var result = text;
+        foreach (var phrase in toxicPhrases)
+            result = result.Replace(phrase, string.Empty, StringComparison.OrdinalIgnoreCase);
+
+        // Clean up resulting artifacts: double spaces, orphaned commas, etc.
+        result = System.Text.RegularExpressions.Regex.Replace(result, @",\s*,", ",");
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\s{2,}", " ");
+        result = result.Replace(" ,", ",").Replace(" .", ".").Trim();
+        result = result.Trim(',', ' ', '.');
+
+        // Remove "toxic" tone references.
+        result = result.Replace("toxic", "santai", StringComparison.OrdinalIgnoreCase);
+
+        return result.Trim();
+    }
+
+    private static string ValidateAndCleanSearchOutput(
         string raw,
+        IReadOnlyList<FreeSearchClient.SearchResult> results,
+        IReadOnlyList<BrowseClient.BrowsePage> browsedPages,
+        SearchGroundingBundle grounding = null)
+    {
+        return ChatAyi.Services.Search.NaturalOutputValidator.ValidateAndCleanSearchOutput(
+            raw, results, browsedPages, grounding);
+    }
+
+    /// <summary>
+    /// Strips leftover template tags that the LLM may emit despite being told not to.
+    /// </summary>
+    private static string StripResidualTemplateTags(string text)
+    {
+        var tags = new[] { "[FAKTA]", "[INFERENSI]", "[RINGKASAN]", "[POIN PENTING]", "[SUMBER]" };
+        foreach (var tag in tags)
+            text = text.Replace(tag, string.Empty, StringComparison.OrdinalIgnoreCase);
+
+        // Also strip numbered source blocks like "[1] http..." if they appear in a raw dump style.
+        // Keep them only if they're inline citations within natural prose.
+        var lines = text.Split('\n');
+        var cleaned = new List<string>();
+        var sourceBlockStarted = false;
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            // Detect a standalone "Sumber:" line that starts a source block dump.
+            if (trimmed.Equals("Sumber:", StringComparison.OrdinalIgnoreCase))
+            {
+                sourceBlockStarted = true;
+                continue;
+            }
+            // Inside a source block, skip numbered URL lines like "[1] https://..."
+            if (sourceBlockStarted && System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^\[\d+\]\s*https?://"))
+                continue;
+            // Any non-matching line exits the source block.
+            sourceBlockStarted = false;
+            cleaned.Add(line);
+        }
+        return string.Join('\n', cleaned).Trim();
+    }
+
+    /// <summary>
+    /// Detects suspicious LLM hallucination patterns and appends natural warnings.
+    /// </summary>
+    private static string FlagSuspiciousPatterns(string text)
+    {
+        // Common tells that the LLM is making things up:
+        var suspiciousPatterns = new[]
+        {
+            ("menurut laporan terbaru", "menurut beberapa sumber"),
+            ("dilansir dari berbagai sumber", "berdasarkan sumber yang gua temuin"),
+            ("as of my last update", ""),
+            ("as of my knowledge cutoff", ""),
+            ("I don't have real-time", ""),
+            ("my training data", ""),
+        };
+
+        foreach (var (pattern, replacement) in suspiciousPatterns)
+        {
+            if (text.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrEmpty(replacement))
+                    text = text.Replace(pattern, replacement, StringComparison.OrdinalIgnoreCase);
+                else
+                    text = text.Replace(pattern, string.Empty, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        return text;
+    }
+
+    /// <summary>
+    /// Computes token-level overlap between LLM output text and evidence passages.
+    /// Returns a ratio 0.0–1.0 indicating how grounded the output is.
+    /// </summary>
+    private static double ComputeGroundingOverlap(
+        string outputText,
+        IReadOnlyList<EvidencePassage> passages)
+    {
+        if (string.IsNullOrWhiteSpace(outputText) || passages is null || passages.Count == 0)
+            return 0;
+
+        var outputTokens = TokenizeForGrounding(outputText);
+        if (outputTokens.Count == 0)
+            return 0;
+
+        // Build union of all evidence tokens.
+        var evidenceTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in passages)
+        {
+            foreach (var token in TokenizeForGrounding(p.Text))
+                evidenceTokens.Add(token);
+            foreach (var token in TokenizeForGrounding(p.Title))
+                evidenceTokens.Add(token);
+        }
+
+        if (evidenceTokens.Count == 0)
+            return 0;
+
+        // Count how many output content tokens appear in evidence.
+        var matchCount = outputTokens.Count(t => evidenceTokens.Contains(t));
+        return (double)matchCount / outputTokens.Count;
+    }
+
+    /// <summary>
+    /// Tokenizes text into meaningful words for grounding overlap comparison.
+    /// Filters out common Indonesian and English stop words to focus on content tokens.
+    /// </summary>
+    private static HashSet<string> TokenizeForGrounding(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Indonesian stop words
+            "yang", "dan", "di", "dari", "untuk", "dengan", "ini", "itu",
+            "adalah", "pada", "ke", "dalam", "oleh", "juga", "akan", "tidak",
+            "ada", "atau", "saat", "jadi", "kalo", "kalau", "tapi", "gua",
+            "gue", "lu", "udah", "aja", "sih", "dong", "nih", "deh",
+            "bisa", "sama", "lagi", "punya", "mau", "buat", "satu",
+            "dia", "mereka", "kita", "kami", "saya", "aku",
+            // English stop words
+            "the", "is", "at", "of", "and", "a", "an", "in", "to",
+            "for", "on", "by", "with", "as", "was", "were", "been",
+            "be", "are", "it", "its", "or", "but", "not", "this",
+            "that", "from", "has", "have", "had", "he", "she", "his",
+            "her", "their", "which", "who", "whom"
+        };
+
+        return System.Text.RegularExpressions.Regex.Matches(
+                text.ToLowerInvariant(), "[a-z0-9]{3,}")
+            .Select(m => m.Value)
+            .Where(t => !stopWords.Contains(t))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Ensures the output includes source attribution.
+    /// If the LLM forgot to add sources, appends a compact source footer.
+    /// </summary>
+    private static string EnsureSourceAttribution(
+        string text,
         IReadOnlyList<FreeSearchClient.SearchResult> results,
         IReadOnlyList<BrowseClient.BrowsePage> browsedPages)
     {
-        var text = (raw ?? string.Empty).Trim();
-        var facts = ExtractBulletLines(text, "[FAKTA]", "[INFERENSI]");
-        if (facts.Count == 0)
-            facts = FallbackBullets(text, 4);
-        if (facts.Count == 0)
-            facts.Add("Data sumber terbatas, jadi gua belum bisa kasih fakta kuat.");
+        var hasSourceMention = text.Contains("sumber", StringComparison.OrdinalIgnoreCase)
+                            || text.Contains("📎", StringComparison.Ordinal)
+                            || text.Contains("http", StringComparison.OrdinalIgnoreCase);
 
-        var infer = ExtractBulletLines(text, "[INFERENSI]", "Sumber:");
-        if (infer.Count == 0)
-            infer.Add("Tidak ada inferensi tambahan.");
-
-        var evidenceCount = Math.Max(results?.Count ?? 0, browsedPages?.Count ?? 0);
-        var maxFacts = Math.Clamp(evidenceCount, 2, 4);
-        var maxInfer = maxFacts >= 4 ? 3 : 2;
-        var ordered = BuildStrictSearchSourceUrls(results, browsedPages, maxSources: 6);
-
-        var sb = new StringBuilder();
-        sb.AppendLine("[FAKTA]");
-        foreach (var item in facts.Take(maxFacts))
-            sb.Append("- ").AppendLine(EnsureThirdPerson(item));
-        sb.AppendLine();
-        sb.AppendLine("[INFERENSI]");
-        foreach (var item in infer.Take(maxInfer))
-            sb.Append("- ").AppendLine(EnsureThirdPerson(item));
-        sb.AppendLine();
-        sb.AppendLine("Sumber:");
-
-        if (ordered.Count == 0)
+        if (!hasSourceMention)
         {
-            sb.AppendLine("[1] Sumber valid tidak tersedia.");
-        }
-        else
-        {
-            for (var i = 0; i < ordered.Count; i++)
-                sb.Append('[').Append(i + 1).Append("] ").AppendLine(ordered[i]);
+            var sourceUrls = BuildCompactSourceUrls(results, browsedPages, maxSources: 5);
+            if (sourceUrls.Count > 0)
+            {
+                text += "\n\n📎 Sumber: " + string.Join(", ", sourceUrls);
+            }
         }
 
-        return sb.ToString().TrimEnd();
+        return text;
     }
 
-    private static List<string> BuildStrictSearchSourceUrls(
+    private static List<string> BuildCompactSourceUrls(
         IReadOnlyList<FreeSearchClient.SearchResult> results,
         IReadOnlyList<BrowseClient.BrowsePage> browsedPages,
         int maxSources)
@@ -1204,51 +1402,45 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return value;
     }
 
-    private static string PrependEvidenceLimitation(
+    private static string PrependNaturalEvidenceWarning(
         string text,
         SearchHealth health,
         SearchDiagnostics diagnostics)
     {
-        var line =
-            $"- Bukti web yang berhasil dikumpulkan masih terbatas ({health.Status}: {health.Reason}). " +
-            $"Non-wiki pages={diagnostics.NonWikiPageCount}, total pages={diagnostics.PageCount}, " +
-            $"non-wiki passages={diagnostics.NonWikiPassageCount}, total passages={diagnostics.PassageCount}.";
+        var warning =
+            $"⚠️ Heads up: data yang berhasil gua kumpulin dari web masih terbatas " +
+            $"(status: {health.Status} — {health.Reason}). " +
+            $"Jadi jawaban di bawah ini mungkin belum 100% lengkap.\n\n";
 
         if (string.IsNullOrWhiteSpace(text))
-            return "[FAKTA]\n" + line + "\n\n[INFERENSI]\n- Belum aman menarik kesimpulan lebih jauh.\n\nSumber:";
+            return warning + "Gua belum nemuin cukup bukti buat jawab pertanyaan lu dengan yakin. Coba query yang lebih spesifik atau pakai /browse <url> langsung.";
 
-        if (text.Contains("[FAKTA]", StringComparison.Ordinal))
-            return text.Replace("[FAKTA]", "[FAKTA]\n" + line + "\n", StringComparison.Ordinal);
-
-        return "[FAKTA]\n" + line + "\n\n" + text;
+        return warning + text;
     }
 
-    private static string GetStrictSearchTemplateInstruction()
+    private static string GetNaturalSearchInstruction()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("KONSTRAINT OUTPUT /search (WAJIB):");
-        sb.AppendLine("- Output HARUS berupa bullet template tetap, bukan paragraf bebas.");
-        sb.AppendLine("- Dilarang gaya ensiklopedik/rangkuman artikel panjang.");
-        sb.AppendLine("- Gunakan sudut pandang pihak ketiga yang netral, bukan roleplay orang pertama.");
-        sb.AppendLine("- Semua klaim di [FAKTA] wajib bersitasi [n] yang cocok dengan bagian Sumber.");
-        sb.AppendLine("- Jika data sumber lemah/kurang/konflik, tulis keterbatasan data di [FAKTA].");
-        sb.AppendLine("- Jika bukti cukup, targetkan 3-4 bullet [FAKTA] agar jawaban tidak terlalu dangkal.");
-        sb.AppendLine("- Jika inferensi tidak ada, wajib tulis tepat: '- Tidak ada inferensi tambahan.' di [INFERENSI].");
-        sb.AppendLine("- Sebelum final, validasi output tetap mengikuti template ini.");
+        sb.AppendLine("FORMAT OUTPUT /search (WAJIB DIIKUTI):");
         sb.AppendLine();
-        sb.AppendLine("Template wajib:");
-        sb.AppendLine("[FAKTA]");
-        sb.AppendLine("- <klaim faktual bersitasi [1]> ");
-        sb.AppendLine("- <klaim faktual bersitasi [2]> ");
-        sb.AppendLine("- <klaim faktual tambahan jika tersedia [3]> ");
-        sb.AppendLine("[INFERENSI]");
-        sb.AppendLine("- <inferensi berbasis fakta>  ATAU  - Tidak ada inferensi tambahan.");
-        sb.AppendLine("Sumber:");
-        sb.AppendLine("[1] <url/sumber>");
-        sb.AppendLine("[2] <url/sumber>");
-        sb.AppendLine("[3] <url/sumber opsional>");
+        sb.AppendLine("1. Tulis jawaban sebagai PARAGRAF NATURAL yang mengalir, seperti orang biasa lagi jelasin ke temennya.");
+        sb.AppendLine("2. DILARANG KERAS menggunakan tag [FAKTA], [INFERENSI], atau format bullet template kaku.");
+        sb.AppendLine("3. Gabungkan semua informasi (fakta, konteks, nuansa) jadi satu jawaban yang koheren dan enak dibaca.");
+        sb.AppendLine("4. Sebutkan sumber secara NATURAL di akhir jawaban, contoh: '📎 Gua dapet info ini dari Wikipedia, Channel News Asia, dan The Straits Times.'");
+        sb.AppendLine("5. Gunakan gaya casual gua/lu yang konsisten. Jangan formal, jangan ensiklopedik.");
+        sb.AppendLine("6. Mulai jawaban dengan kalimat pembuka singkat seperti: 'Oke, gua udah cek dari beberapa sumber.' atau 'Jadi gini...'");
+        sb.AppendLine("7. Jika data dari sumber terbatas/lemah/konflik, bilang terus terang secara natural, misalnya: 'Tapi perlu dicatat, data yang gua temuin masih terbatas jadi...' — JANGAN ngarang fakta untuk mengisi kekosongan.");
+        sb.AppendLine("8. Jika evidence BENAR-BENAR tidak cukup untuk menjawab, jawab jujur: 'Gua belum nemuin data yang cukup kuat buat jawab ini. Coba query yang lebih spesifik atau pakai /browse <url> langsung.'");
+        sb.AppendLine("9. Panjang jawaban ideal: 3-6 kalimat untuk query sederhana, bisa lebih panjang untuk topik kompleks.");
         sb.AppendLine();
-        sb.AppendLine("Jika tidak ada sumber valid sama sekali, tetap pakai template di atas dan jelaskan keterbatasan pada [FAKTA].");
+        sb.AppendLine("CONTOH OUTPUT YANG BENAR:");
+        sb.AppendLine("---");
+        sb.AppendLine("Oke, gua udah cek dari beberapa sumber.");
+        sb.AppendLine();
+        sb.AppendLine("Presiden Singapura yang menjabat saat ini adalah Tharman Shanmugaratnam, yang resmi dilantik pada 14 September 2023. Sebelumnya dia menjabat sebagai Senior Minister di kabinet Singapura. Jangan ketuker sama Lawrence Wong ya — dia itu Perdana Menteri, bukan presiden.");
+        sb.AppendLine();
+        sb.AppendLine("📎 Gua dapet info ini dari Wikipedia dan Channel News Asia.");
+        sb.AppendLine("---");
         return sb.ToString().Trim();
     }
 
@@ -2320,32 +2512,38 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 var searchModel = model;
                 var searchThinking = GetThinkingInstruction();
-                var searchFormat = GetStrictSearchTemplateInstruction();
+                var searchFormat = GetNaturalSearchInstruction();
                 var searchSnapshot = await BuildSessionContextSnapshotForSearchAsync(sessionId, _cts.Token);
                 var searchGroundingRules = new StringBuilder();
-                searchGroundingRules.AppendLine("Grounding rules (search mode):");
-                searchGroundingRules.AppendLine("- Jawab hanya dari sources dan evidence passages yang diberikan di bawah.");
-                searchGroundingRules.AppendLine("- Evidence passages adalah dasar utama klaim fakta.");
+                searchGroundingRules.AppendLine("GROUNDING RULES (SEARCH MODE — WAJIB DIIKUTI):");
+                searchGroundingRules.AppendLine();
+                searchGroundingRules.AppendLine("[ZERO HALLUCINATION POLICY]");
+                searchGroundingRules.AppendLine("- Jawab HANYA berdasarkan evidence passages dan sources yang diberikan di bawah.");
+                searchGroundingRules.AppendLine("- Evidence passages adalah satu-satunya dasar klaim fakta. DILARANG menambah fakta dari pengetahuan internal model.");
                 searchGroundingRules.AppendLine("- Candidate URL tanpa evidence passage tidak boleh dipakai untuk klaim detail kecuali judul/snippet sangat eksplisit.");
-                searchGroundingRules.AppendLine("- Jangan pakai pengetahuan umum/model jika tidak didukung sumber.");
+                searchGroundingRules.AppendLine("- Jika evidence TIDAK mendukung klaim tertentu, JANGAN tulis klaim itu sama sekali. Lebih baik jawaban pendek tapi akurat daripada panjang tapi ngarang.");
+                searchGroundingRules.AppendLine("- Jika data tidak cukup/konflik, bilang terus terang secara natural dan sarankan query lanjutan atau /browse URL.");
+                searchGroundingRules.AppendLine();
+                searchGroundingRules.AppendLine("[LANGUAGE & VOICE]");
                 searchGroundingRules.AppendLine("- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.");
-                searchGroundingRules.AppendLine("- Bedakan [FAKTA] (bersitasi) vs [INFERENSI] (dugaan terbatas).");
-                searchGroundingRules.AppendLine("- Jika data tidak cukup/konflik, tulis jelas keterbatasannya dan minta query lanjutan atau /browse URL.");
-                searchGroundingRules.AppendLine("- Jika sumber didominasi wiki sementara sumber non-wiki tipis/gagal di-browse, tulis keterbatasan data secara eksplisit di [FAKTA].");
                 searchGroundingRules.AppendLine("- Voice wajib konsisten gaya ChatAyi: pakai gua/lu, jangan campur kamu/Anda/gaya netral.");
                 searchGroundingRules.AppendLine("- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.");
-                searchGroundingRules.AppendLine("- Jika sumber yang berhasil dipakai sangat terbatas atau didominasi satu sumber, nyatakan keterbatasan data secara eksplisit di bagian [FAKTA] atau [INFERENSI].");
+                searchGroundingRules.AppendLine("- Tulis seperti orang biasa lagi jelasin ke temennya, santai tapi tetap informatif.");
                 searchGroundingRules.AppendLine();
-                searchGroundingRules.AppendLine("[STRICT OUTPUT RULES - IDENTITY SAFETY]");
+                searchGroundingRules.AppendLine("[IDENTITY SAFETY]");
                 searchGroundingRules.AppendLine("- Kamu adalah ChatAyi, bukan subjek yang dibahas.");
                 searchGroundingRules.AppendLine("- Dilarang menjawab seolah-olah kamu adalah orang yang sedang dibahas.");
                 searchGroundingRules.AppendLine("- Semua jawaban HARUS menggunakan sudut pandang pihak ketiga.");
                 searchGroundingRules.AppendLine("- BENAR: 'Windah Basudara adalah...'");
                 searchGroundingRules.AppendLine("- SALAH: 'Gua adalah...', 'Saya adalah...'");
                 searchGroundingRules.AppendLine("- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.");
-                searchGroundingRules.AppendLine("- Pelanggaran aturan ini dianggap jawaban salah.");
+                searchGroundingRules.AppendLine();
+                searchGroundingRules.AppendLine("[FORMAT — NATURAL ONLY]");
+                searchGroundingRules.AppendLine("- DILARANG menggunakan tag [FAKTA], [INFERENSI], atau format bullet template kaku.");
+                searchGroundingRules.AppendLine("- Tulis jawaban sebagai paragraf natural yang mengalir.");
+                searchGroundingRules.AppendLine("- Sebutkan sumber secara natural di akhir (contoh: '📎 Gua dapet info ini dari Wikipedia dan berita resmi.')");
                 var searchSafety = BuildSafetyAndBoundariesInstruction(
-                    "Gunakan hanya bukti dari sumber web yang diberikan. Wajib Bahasa Indonesia. Setiap klaim faktual wajib sitasi [1], [2], dst. Jangan roleplay sebagai subjek pembahasan. Voice wajib gua/lu konsisten.",
+                    "Gunakan hanya bukti dari sumber web yang diberikan. Wajib Bahasa Indonesia. Jangan roleplay sebagai subjek pembahasan. Tulis jawaban natural tanpa template kaku. Voice wajib gua/lu konsisten.",
                     searchThinking,
                     searchFormat,
                     GetUnifiedVoiceInstruction(),
@@ -2356,7 +2554,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 var searchRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
                     searchSafety,
-                    persona,
+                    CreateSearchSafePersona(persona),
                     profile,
                     null,
                     searchSnapshot,
@@ -2406,13 +2604,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 if (searchCaptured.Length > 0)
                 {
-                    var strictSearch = EnforceStrictSearchTemplate(searchCaptured.ToString(), results, browsedPages);
-                    if (unhealthy && !strictSearch.Contains("keterbatasan", StringComparison.OrdinalIgnoreCase))
+                    var validated = ValidateAndCleanSearchOutput(searchCaptured.ToString(), results, browsedPages, grounding);
+                    if (unhealthy && !validated.Contains("terbatas", StringComparison.OrdinalIgnoreCase)
+                                   && !validated.Contains("belum", StringComparison.OrdinalIgnoreCase))
                     {
-                        strictSearch = PrependEvidenceLimitation(strictSearch, grounding.Health, grounding.Diagnostics);
+                        validated = PrependNaturalEvidenceWarning(validated, grounding.Health, grounding.Diagnostics);
                     }
-                    assistant.Content = strictSearch;
-                    await AppendSessionRecordAsync(sessionId, "assistant", strictSearch, searchModel, string.Empty, _cts.Token);
+                    assistant.Content = validated;
+                    await AppendSessionRecordAsync(sessionId, "assistant", validated, searchModel, string.Empty, _cts.Token);
                 }
 
                 return;
@@ -2484,7 +2683,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 var browseRequestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
                     browseSafety,
-                    persona,
+                    CreateSearchSafePersona(persona),
                     profile,
                     null,
                     browseSnapshot,
