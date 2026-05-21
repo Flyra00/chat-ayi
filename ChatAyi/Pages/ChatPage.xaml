@@ -9,84 +9,107 @@
 
     <Grid RowDefinitions="Auto,*,Auto" RowSpacing="0">
 
-        <!-- Header -->
-        <Border StrokeThickness="0" Padding="{StaticResource ChatPagePadding}" Background="{StaticResource ChatHeaderGradient}">
-            <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12" RowDefinitions="Auto">
-                <Button Text="&lt;"
-                        Style="{StaticResource ChatHeaderIconButton}"
-                        Clicked="OnBackClicked"
-                        SemanticProperties.Hint="Back" />
+        <Border Style="{StaticResource ChatHeaderContainerStyle}">
+            <Grid RowDefinitions="Auto,Auto,1" RowSpacing="10">
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                    <Button Text="‹"
+                            Style="{StaticResource ChatHeaderIconButton}"
+                            Clicked="OnBackClicked"
+                            SemanticProperties.Hint="Back" />
 
-                <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
-                    <Label Text="ChatAyi" Style="{StaticResource ChatHeaderTitle}" />
-                    <Label Text="{Binding ProviderSubtitle}" Style="{StaticResource ChatHeaderSubtitle}" />
-                    <HorizontalStackLayout Spacing="8">
-                        <Picker WidthRequest="200"
-                                Title="Session"
-                                ItemsSource="{Binding SessionItems}"
-                                ItemDisplayBinding="{Binding SelectorLabel}"
-                                SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
-                                FontSize="12"
-                                TextColor="White"
-                                BackgroundColor="Transparent" />
-                        <Button Text="New"
-                                Style="{StaticResource ChatHeaderIconButton}"
-                                FontSize="12"
-                                Padding="10,6"
-                                Clicked="OnNewSessionClicked"
-                                SemanticProperties.Hint="Create new session" />
+                    <HorizontalStackLayout Grid.Column="1" Spacing="8" VerticalOptions="Center">
+                        <Label Text="ChatAyi" Style="{StaticResource ChatHeaderTitle}" VerticalOptions="Center" />
+                        <Border Style="{StaticResource ChatStatusPill}" VerticalOptions="Center">
+                            <HorizontalStackLayout Spacing="5" VerticalOptions="Center">
+                                <BoxView WidthRequest="7" HeightRequest="7" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Center" />
+                                <Label x:Name="StatusText" Text="Ready" Style="{StaticResource ChatStatusText}" VerticalOptions="Center">
+                                    <Label.Triggers>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsSending}" Value="True">
+                                            <Setter Property="Text" Value="Thinking" />
+                                        </DataTrigger>
+                                    </Label.Triggers>
+                                </Label>
+                            </HorizontalStackLayout>
+                        </Border>
                     </HorizontalStackLayout>
-                </VerticalStackLayout>
 
-                <Border Grid.Column="2" Style="{StaticResource ChatStatusPill}" VerticalOptions="Center">
+                    <Button Grid.Column="2"
+                            Text="⚙"
+                            Style="{StaticResource ChatHeaderIconButton}"
+                            Clicked="OnSettingsClicked"
+                            SemanticProperties.Hint="Settings" />
+                </Grid>
+
+                <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="10">
                     <HorizontalStackLayout Spacing="8" VerticalOptions="Center">
-                        <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Center" />
-                        <Label x:Name="StatusText" Text="Ready" Style="{StaticResource ChatStatusText}" VerticalOptions="Center">
-                            <Label.Triggers>
-                                <DataTrigger TargetType="Label" Binding="{Binding IsSending}" Value="True">
-                                    <Setter Property="Text" Value="Thinking" />
-                                </DataTrigger>
-                            </Label.Triggers>
-                        </Label>
+                        <Label Text="{Binding ProviderSubtitle}" Style="{StaticResource ChatHeaderSubtitle}" VerticalOptions="Center" />
+                        <Border Style="{StaticResource ChatSessionPickerContainerStyle}" VerticalOptions="Center">
+                            <Picker Title="Session"
+                                    ItemsSource="{Binding SessionItems}"
+                                    ItemDisplayBinding="{Binding SelectorLabel}"
+                                    SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                                    BackgroundColor="Transparent"
+                                    TextColor="{StaticResource Gray200}"
+                                    MaximumWidthRequest="152"
+                                    HorizontalOptions="Start" />
+                        </Border>
                     </HorizontalStackLayout>
-                </Border>
 
-                <Button Grid.Column="3"
-                        Text="⚙"
-                        Style="{StaticResource ChatHeaderIconButton}"
-                        Clicked="OnSettingsClicked"
-                        SemanticProperties.Hint="Settings" />
+                    <Button Grid.Column="1"
+                            Text="＋"
+                            Style="{StaticResource ChatHeaderIconButton}"
+                            FontSize="14"
+                            Clicked="OnNewSessionClicked"
+                            SemanticProperties.Hint="Create new session" />
+                </Grid>
+
+                <BoxView Grid.Row="2" HeightRequest="1" BackgroundColor="{StaticResource ChatStroke}" />
             </Grid>
         </Border>
 
-        <BoxView HeightRequest="1" BackgroundColor="{StaticResource Gray900}" VerticalOptions="End" />
-
-        <!-- Messages -->
         <CollectionView Grid.Row="1"
                         ItemsSource="{Binding Messages}"
                         BackgroundColor="Transparent"
                         Margin="16,12,16,0">
             <CollectionView.ItemsLayout>
-                <LinearItemsLayout Orientation="Vertical" ItemSpacing="10" />
+                <LinearItemsLayout Orientation="Vertical" ItemSpacing="12" />
             </CollectionView.ItemsLayout>
 
             <CollectionView.EmptyView>
-                <VerticalStackLayout Padding="0,28" Spacing="12" HorizontalOptions="Center">
-                    <Border Background="{StaticResource ChatSurfaceBrush}"
-                            Stroke="{StaticResource ChatStrokeBrush}"
-                            StrokeThickness="1"
-                            StrokeShape="RoundRectangle 18"
-                            Padding="16,14">
-                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center">
-                            <Label Text="ChatAyi" FontFamily="OpenSansSemibold" FontSize="16" TextColor="{StaticResource Gray100}" HorizontalTextAlignment="Center" />
-                            <Label Text="Ketik pesan pertama kamu di bawah." FontSize="13" TextColor="{StaticResource Gray400}" HorizontalTextAlignment="Center" />
-                            <Label IsVisible="{Binding ShowCommandTips}"
-                                   Text="Tip: /search ... atau /browse &lt;url&gt;"
-                                   FontSize="12"
-                                   TextColor="{StaticResource Gray500}"
-                                   HorizontalTextAlignment="Center" />
-                        </VerticalStackLayout>
-                    </Border>
+                <VerticalStackLayout Padding="20,48" Spacing="16" HorizontalOptions="Center" VerticalOptions="Center" MaximumWidthRequest="420">
+                    <Label Text="Mulai percakapan"
+                           FontFamily="OpenSansSemibold"
+                           FontSize="20"
+                           TextColor="{StaticResource Gray100}"
+                           HorizontalTextAlignment="Center" />
+                    <Label Text="Tulis pesan atau tekan + untuk memakai tools."
+                           FontSize="13"
+                           TextColor="{StaticResource Gray400}"
+                           HorizontalTextAlignment="Center" />
+
+                    <FlexLayout Wrap="Wrap"
+                                JustifyContent="Center"
+                                HorizontalOptions="Center"
+                                MaximumWidthRequest="380">
+                        <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
+                            <Label Text="Web search" Style="{StaticResource EmptyStateChipLabelStyle}" />
+                        </Border>
+                        <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
+                            <Label Text="Browse URL" Style="{StaticResource EmptyStateChipLabelStyle}" />
+                        </Border>
+                        <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
+                            <Label Text="Save memory" Style="{StaticResource EmptyStateChipLabelStyle}" />
+                        </Border>
+                        <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
+                            <Label Text="Jelaskan async/await" Style="{StaticResource EmptyStateChipLabelStyle}" />
+                        </Border>
+                    </FlexLayout>
+
+                    <Label IsVisible="{Binding ShowCommandTips}"
+                           Text="Tekan + untuk Web search, Browse URL, dan Memory."
+                           FontSize="12"
+                           TextColor="{StaticResource Gray500}"
+                           HorizontalTextAlignment="Center" />
                 </VerticalStackLayout>
             </CollectionView.EmptyView>
 
@@ -94,7 +117,6 @@
                 <DataTemplate>
                     <SwipeView>
                         <SwipeView.Triggers>
-                            <!-- Only allow swipe-to-copy on assistant messages -->
                             <DataTrigger TargetType="SwipeView" Binding="{Binding Role}" Value="user">
                                 <Setter Property="IsEnabled" Value="False" />
                             </DataTrigger>
@@ -114,24 +136,23 @@
                                 Background="{StaticResource ChatAssistantBubbleBrush}"
                                 Stroke="{StaticResource ChatAssistantBubbleStrokeBrush}"
                                 HorizontalOptions="Start"
-                                Margin="0,0,44,0"
-                                MaximumWidthRequest="520">
+                                Margin="0,0,32,0"
+                                MaximumWidthRequest="420">
 
                             <Border.GestureRecognizers>
-                                <!-- Double-tap assistant bubble to copy (swipe also works) -->
                                 <TapGestureRecognizer NumberOfTapsRequired="2"
-                                                     Command="{Binding Source={x:Reference ThisPage}, Path=CopyMessageCommand}"
-                                                     CommandParameter="{Binding .}" />
+                                                      Command="{Binding Source={x:Reference ThisPage}, Path=CopyMessageCommand}"
+                                                      CommandParameter="{Binding .}" />
                             </Border.GestureRecognizers>
 
-                            <controls:MarkdownMessageView Text="{Binding Content}" />
+                            <controls:MarkdownMessageView Text="{Binding Content}" Role="{Binding Role}" />
 
                             <Border.Triggers>
                                 <DataTrigger TargetType="Border" Binding="{Binding Role}" Value="user">
                                     <Setter Property="Background" Value="{StaticResource ChatUserBubbleBrush}" />
                                     <Setter Property="Stroke" Value="{StaticResource ChatUserBubbleStrokeBrush}" />
                                     <Setter Property="HorizontalOptions" Value="End" />
-                                    <Setter Property="Margin" Value="44,0,0,0" />
+                                    <Setter Property="Margin" Value="32,0,0,0" />
                                 </DataTrigger>
                             </Border.Triggers>
                         </Border>
@@ -140,48 +161,65 @@
             </CollectionView.ItemTemplate>
         </CollectionView>
 
-        <!-- Composer -->
-        <VerticalStackLayout Grid.Row="2" Padding="16,10,16,16" Spacing="10">
+        <VerticalStackLayout Grid.Row="2" Padding="16,8,16,24" Spacing="8">
 
             <Border IsVisible="{Binding IsSending}"
                     Style="{StaticResource ChatStatusPill}"
-                    Padding="12,10"
+                    Padding="12,8"
                     HorizontalOptions="Start">
-                <HorizontalStackLayout Spacing="10" VerticalOptions="Center">
-                    <ActivityIndicator IsRunning="True" WidthRequest="16" HeightRequest="16" Color="{StaticResource NvidiaGreen}" />
+                <HorizontalStackLayout Spacing="8" VerticalOptions="Center">
+                    <ActivityIndicator IsRunning="True" WidthRequest="14" HeightRequest="14" Color="{StaticResource NvidiaGreen}" />
                     <Label Text="Sedang mengetik..." Style="{StaticResource ChatMetaText}" TextColor="{StaticResource Gray200}" VerticalOptions="Center" />
                 </HorizontalStackLayout>
             </Border>
 
             <Border IsVisible="{Binding ShowOfflineBanner}"
-                    Style="{StaticResource ChatStatusPill}"
-                    Padding="12,10"
-                    HorizontalOptions="Start">
-                <HorizontalStackLayout Spacing="10" VerticalOptions="Center">
-                    <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Center" />
+                    Style="{StaticResource OfflineBannerStyle}">
+                <HorizontalStackLayout Spacing="8" VerticalOptions="Center">
+                    <Label Text="⚠" FontSize="14" VerticalTextAlignment="Center" />
                     <Label Text="{Binding OfflineBannerText}" Style="{StaticResource ChatMetaText}" TextColor="{StaticResource Gray200}" VerticalOptions="Center" />
                     <Button Text="Retry"
                             Style="{StaticResource ChatHeaderIconButton}"
                             FontSize="12"
-                            Padding="10,6"
                             Command="{Binding RetryOfflineQueueCommand}"
                             IsVisible="{Binding CanRetryOfflineQueue}" />
                 </HorizontalStackLayout>
             </Border>
 
             <Border Style="{StaticResource ChatComposerContainer}">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10" VerticalOptions="End">
-                    <Editor Text="{Binding InputText}"
-                            AutoSize="TextChanges"
-                            MaximumHeightRequest="140"
-                            Placeholder="Type a message..."
-                            PlaceholderColor="{StaticResource Gray500}"
-                            TextColor="White"
-                            BackgroundColor="Transparent" />
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalOptions="Center">
 
-                    <Button Grid.Column="1"
+                    <Button Style="{StaticResource ComposerPlusButtonStyle}"
+                            Clicked="OnToolMenuClicked"
+                            SemanticProperties.Hint="Open tools menu" />
+
+                    <VerticalStackLayout Grid.Column="1" Spacing="6" VerticalOptions="Center">
+                        <Border IsVisible="{Binding HasActiveComposerTool}"
+                                Style="{StaticResource ActiveToolChipStyle}">
+                            <HorizontalStackLayout Spacing="6">
+                                <Label Text="{Binding ActiveComposerToolLabel}"
+                                       Style="{StaticResource ActiveToolChipLabelStyle}" />
+                                <Button Style="{StaticResource ActiveToolChipCloseButtonStyle}"
+                                        Clicked="OnClearToolModeClicked"
+                                        SemanticProperties.Hint="Clear selected tool" />
+                            </HorizontalStackLayout>
+                        </Border>
+
+                        <Editor Text="{Binding InputText}"
+                                AutoSize="TextChanges"
+                                MaximumHeightRequest="140"
+                                Placeholder="{Binding ComposerPlaceholder}"
+                                PlaceholderColor="{StaticResource Gray400}"
+                                TextColor="White"
+                                BackgroundColor="Transparent" />
+                    </VerticalStackLayout>
+
+                    <Button Grid.Column="2"
                             Style="{StaticResource ChatSendButton}"
-                            Text="Send"
+                            Text="↑"
+                            FontSize="18"
+                            WidthRequest="44"
+                            HeightRequest="44"
                             Clicked="OnSendClicked"
                             IsEnabled="{Binding CanSend}" />
                 </Grid>
@@ -189,12 +227,142 @@
 
         </VerticalStackLayout>
 
-        <!-- Settings Overlay -->
+        <Grid Grid.RowSpan="3"
+              ZIndex="50"
+              IsVisible="{Binding IsToolMenuOpen}">
+
+            <BoxView BackgroundColor="#66000000">
+                <BoxView.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnToolMenuBackdropTapped" />
+                </BoxView.GestureRecognizers>
+            </BoxView>
+
+            <Border Style="{StaticResource ToolMenuContainerStyle}"
+                    VerticalOptions="End"
+                    HorizontalOptions="Start"
+                    Margin="16,0,0,92">
+                <VerticalStackLayout Spacing="2">
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="10" StyleId="search">
+                            <Label Text="🌐" Style="{StaticResource ToolMenuIconStyle}" />
+                            <VerticalStackLayout Spacing="1" VerticalOptions="Center">
+                                <Label Text="Web search" Style="{StaticResource ToolMenuTitleStyle}" />
+                                <Label Text="Cari informasi dari web" Style="{StaticResource ToolMenuSubtitleStyle}" />
+                            </VerticalStackLayout>
+                        </HorizontalStackLayout>
+                    </Border>
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="10" StyleId="browse">
+                            <Label Text="🔗" Style="{StaticResource ToolMenuIconStyle}" />
+                            <VerticalStackLayout Spacing="1" VerticalOptions="Center">
+                                <Label Text="Browse URL" Style="{StaticResource ToolMenuTitleStyle}" />
+                                <Label Text="Baca/ringkas halaman web" Style="{StaticResource ToolMenuSubtitleStyle}" />
+                            </VerticalStackLayout>
+                        </HorizontalStackLayout>
+                    </Border>
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="10" StyleId="memory_add">
+                            <Label Text="💾" Style="{StaticResource ToolMenuIconStyle}" />
+                            <VerticalStackLayout Spacing="1" VerticalOptions="Center">
+                                <Label Text="Save memory" Style="{StaticResource ToolMenuTitleStyle}" />
+                                <Label Text="Simpan hal penting" Style="{StaticResource ToolMenuSubtitleStyle}" />
+                            </VerticalStackLayout>
+                        </HorizontalStackLayout>
+                    </Border>
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="10" StyleId="memory_list">
+                            <Label Text="📚" Style="{StaticResource ToolMenuIconStyle}" />
+                            <Label Text="Memory list" Style="{StaticResource ToolMenuTitleStyle}" />
+                        </HorizontalStackLayout>
+                    </Border>
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="10" StyleId="retry">
+                            <Label Text="↻" Style="{StaticResource ToolMenuIconStyle}" FontSize="18" />
+                            <Label Text="Retry queued" Style="{StaticResource ToolMenuTitleStyle}" />
+                        </HorizontalStackLayout>
+                    </Border>
+
+                    <BoxView HeightRequest="1" BackgroundColor="{StaticResource ChatStroke}" Margin="8,4" />
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
+                        </Border.GestureRecognizers>
+                        <HorizontalStackLayout Spacing="10" StyleId="thinking_on">
+                            <Label Text="🧠" Style="{StaticResource ToolMenuIconStyle}" />
+                            <VerticalStackLayout Spacing="1" VerticalOptions="Center">
+                                <Label Text="Thinking mode" Style="{StaticResource ToolMenuTitleStyle}" />
+                                <Label Text="Toggle on / off / verbose" Style="{StaticResource ToolMenuSubtitleStyle}" />
+                            </VerticalStackLayout>
+                        </HorizontalStackLayout>
+                    </Border>
+
+                    <Border Style="{StaticResource ToolMenuItemStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnMoreMenuClicked" />
+                        </Border.GestureRecognizers>
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                            <Label Text="⋯" Style="{StaticResource ToolMenuIconStyle}" />
+                            <Label Grid.Column="1" Text="More" Style="{StaticResource ToolMenuTitleStyle}" />
+                            <Label Grid.Column="2" Text="›" Style="{StaticResource ToolMenuChevronStyle}" />
+                        </Grid>
+                    </Border>
+
+                    <VerticalStackLayout IsVisible="{Binding IsMoreMenuOpen}" Spacing="0" Margin="20,0,0,0">
+                        <Border StrokeThickness="0" Padding="10,8" BackgroundColor="Transparent" StrokeShape="RoundRectangle 10">
+                            <Border.GestureRecognizers><TapGestureRecognizer Tapped="OnToolSelectedClicked" /></Border.GestureRecognizers>
+                            <HorizontalStackLayout Spacing="8" StyleId="memory_on">
+                                <Label Text="Memory on" Style="{StaticResource ToolMenuTitleStyle}" FontSize="13" />
+                            </HorizontalStackLayout>
+                        </Border>
+                        <Border StrokeThickness="0" Padding="10,8" BackgroundColor="Transparent" StrokeShape="RoundRectangle 10">
+                            <Border.GestureRecognizers><TapGestureRecognizer Tapped="OnToolSelectedClicked" /></Border.GestureRecognizers>
+                            <HorizontalStackLayout Spacing="8" StyleId="memory_off">
+                                <Label Text="Memory off" Style="{StaticResource ToolMenuTitleStyle}" FontSize="13" />
+                            </HorizontalStackLayout>
+                        </Border>
+                        <Border StrokeThickness="0" Padding="10,8" BackgroundColor="Transparent" StrokeShape="RoundRectangle 10">
+                            <Border.GestureRecognizers><TapGestureRecognizer Tapped="OnToolSelectedClicked" /></Border.GestureRecognizers>
+                            <HorizontalStackLayout Spacing="8" StyleId="memory_status">
+                                <Label Text="Memory status" Style="{StaticResource ToolMenuTitleStyle}" FontSize="13" />
+                            </HorizontalStackLayout>
+                        </Border>
+                        <Border StrokeThickness="0" Padding="10,8" BackgroundColor="Transparent" StrokeShape="RoundRectangle 10">
+                            <Border.GestureRecognizers><TapGestureRecognizer Tapped="OnToolSelectedClicked" /></Border.GestureRecognizers>
+                            <HorizontalStackLayout Spacing="8" StyleId="settings">
+                                <Label Text="Settings" Style="{StaticResource ToolMenuTitleStyle}" FontSize="13" />
+                            </HorizontalStackLayout>
+                        </Border>
+                    </VerticalStackLayout>
+
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
+
         <Grid Grid.RowSpan="3"
               ZIndex="100"
               IsVisible="{Binding IsSettingsOpen}">
 
-            <!-- Backdrop (tap to close) -->
             <BoxView ZIndex="0" BackgroundColor="#88000000">
                 <BoxView.GestureRecognizers>
                     <TapGestureRecognizer Command="{Binding Source={x:Reference ThisPage}, Path=CloseSettingsCommand}" />
@@ -206,85 +374,103 @@
                     Stroke="{StaticResource ChatStrokeStrongBrush}"
                     StrokeThickness="1"
                     StrokeShape="RoundRectangle 22"
-                    Padding="16"
-                    HorizontalOptions="Center"
+                    Padding="18"
+                    HorizontalOptions="Fill"
                     VerticalOptions="Center"
-                    WidthRequest="320">
+                    MaximumWidthRequest="420"
+                    MaximumHeightRequest="600"
+                    Margin="16">
 
-                <VerticalStackLayout Spacing="14">
-                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                        <Label Text="Settings" FontFamily="OpenSansSemibold" FontSize="16" TextColor="{StaticResource Gray100}" />
-                        <Button Grid.Column="1" Text="✕" Style="{StaticResource ChatHeaderIconButton}"
-                                Clicked="OnCloseSettingsClicked" />
-                    </Grid>
-
-                     <Border Background="{StaticResource ChatSurface2Brush}" Stroke="{StaticResource ChatStrokeBrush}"
-                             StrokeThickness="1" StrokeShape="RoundRectangle 16" Padding="12,10">
-                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
-                            <Label Text="Provider" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Picker Grid.Column="1" SelectedIndex="{Binding ProviderIndex}" Title="Provider">
-                                <Picker.Items>
-                                    <x:String>Cerebras</x:String>
-                                    <x:String>NVIDIA Integrate</x:String>
-                                    <x:String>Inception</x:String>
-                                </Picker.Items>
-                            </Picker>
-
-                            <Label Grid.Row="1" Text="Model" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Picker Grid.Row="1" Grid.Column="1"
-                                    Title="Model"
-                                    ItemsSource="{Binding ModelOptions}"
-                                    SelectedItem="{Binding CurrentModel}"
-                                    TextColor="White" />
-
-                            <Label Grid.Row="2" Text="Model status" TextColor="{StaticResource Gray400}" FontSize="13" />
-                            <Label Grid.Row="2" Grid.Column="1" Text="{Binding CurrentModelStatusText}" TextColor="{Binding CurrentModelStatusColor}" FontSize="12" HorizontalTextAlignment="End" />
-
-                            <Label Grid.Row="3" Text="Web tools (/search, /browse)" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Row="3" Grid.Column="1" IsToggled="{Binding EnableWebTools}" />
-
-                            <Label Grid.Row="4" Text="Memory tool (/remember)" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Row="4" Grid.Column="1" IsToggled="{Binding EnableRemember}" />
-
-                            <Label Grid.Row="5" Text="Show command tips" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Row="5" Grid.Column="1" IsToggled="{Binding ShowCommandTips}" />
-
-                            <Label Grid.Row="6" Text="Offline fallback" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Row="6" Grid.Column="1" IsToggled="{Binding EnableOfflineFallback}" />
-
-                            <Label Grid.Row="7" Text="Queue while offline" TextColor="{StaticResource Gray400}" FontSize="13" />
-                            <Switch Grid.Row="7" Grid.Column="1" IsToggled="{Binding QueueWhileOffline}" />
-
-                            <Label Grid.Row="8" Text="Dynamic context pruning" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Row="8" Grid.Column="1" IsToggled="{Binding EnableDcp}" />
-
-                            <Label Grid.Row="9" Text="DCP status" TextColor="{StaticResource Gray400}" FontSize="13" />
-                            <Label Grid.Row="9" Grid.Column="1" Text="{Binding DcpSummaryText}" TextColor="{StaticResource Gray300}" FontSize="12" HorizontalTextAlignment="End" />
+                <ScrollView>
+                    <VerticalStackLayout Spacing="10">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <Label Text="Settings" FontFamily="OpenSansSemibold" FontSize="18" TextColor="{StaticResource Gray100}" />
+                            <Button Grid.Column="1" Text="✕" Style="{StaticResource ChatHeaderIconButton}"
+                                    Clicked="OnCloseSettingsClicked" />
                         </Grid>
-                    </Border>
 
-                    <Border Background="{StaticResource ChatSurface2Brush}" Stroke="{StaticResource ChatStrokeBrush}"
-                            StrokeThickness="1" StrokeShape="RoundRectangle 16" Padding="12,10">
-                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
-                            <Label Text="Thinking mode" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Column="1" IsToggled="{Binding ThinkingEnabled}" />
+                        <Label Text="Provider &amp; Model" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" RowSpacing="12">
+                                <Label Text="Provider" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Picker Grid.Column="1" SelectedIndex="{Binding ProviderIndex}" Title="Provider">
+                                    <Picker.Items>
+                                        <x:String>Cerebras</x:String>
+                                        <x:String>NVIDIA Integrate</x:String>
+                                        <x:String>Inception</x:String>
+                                    </Picker.Items>
+                                </Picker>
 
-                            <Label Grid.Row="1" Text="Verbose (Plan + Answer)" TextColor="{StaticResource Gray400}" FontSize="13" />
-                            <Switch Grid.Row="1" Grid.Column="1" IsToggled="{Binding ThinkingVerbose}" />
-                        </Grid>
-                    </Border>
+                                <Label Grid.Row="1" Text="Model" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Picker Grid.Row="1" Grid.Column="1"
+                                        Title="Model"
+                                        ItemsSource="{Binding ModelOptions}"
+                                        SelectedItem="{Binding CurrentModel}"
+                                        TextColor="White" />
 
-                    <Border Background="{StaticResource ChatSurface2Brush}" Stroke="{StaticResource ChatStrokeBrush}"
-                            StrokeThickness="1" StrokeShape="RoundRectangle 16" Padding="12,10">
-                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto" RowSpacing="12">
-                            <Label Text="Structured answers" TextColor="{StaticResource Gray200}" FontSize="13" />
-                            <Switch Grid.Column="1" IsToggled="{Binding StructuredAnswers}" />
-                        </Grid>
-                    </Border>
+                                <Label Grid.Row="2" Text="Status" TextColor="{StaticResource Gray400}" FontSize="12" />
+                                <Label Grid.Row="2" Grid.Column="1" Text="{Binding CurrentModelStatusText}" TextColor="{Binding CurrentModelStatusColor}" FontSize="12" HorizontalTextAlignment="End" />
+                            </Grid>
+                        </Border>
 
-                    <Label Text="Tip: kamu juga bisa pakai /thinking on|off|verbose."
-                           Style="{StaticResource ChatMetaText}" />
-                </VerticalStackLayout>
+                        <Label Text="Web Tools" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto" RowSpacing="12">
+                                <Label Text="Enable web tools" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Column="1" IsToggled="{Binding EnableWebTools}" />
+                            </Grid>
+                        </Border>
+
+                        <Label Text="Memory" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
+                                <Label Text="Memory tool" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Column="1" IsToggled="{Binding EnableRemember}" />
+                                <Label Grid.Row="1" Text="Show tips" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Row="1" Grid.Column="1" IsToggled="{Binding ShowCommandTips}" />
+                            </Grid>
+                        </Border>
+
+                        <Label Text="Offline" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
+                                <Label Text="Offline fallback" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Column="1" IsToggled="{Binding EnableOfflineFallback}" />
+                                <Label Grid.Row="1" Text="Queue while offline" TextColor="{StaticResource Gray400}" FontSize="13" />
+                                <Switch Grid.Row="1" Grid.Column="1" IsToggled="{Binding QueueWhileOffline}" />
+                            </Grid>
+                        </Border>
+
+                        <Label Text="Context" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
+                                <Label Text="Dynamic context pruning" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Column="1" IsToggled="{Binding EnableDcp}" />
+                                <Label Grid.Row="1" Text="DCP status" TextColor="{StaticResource Gray400}" FontSize="12" />
+                                <Label Grid.Row="1" Grid.Column="1" Text="{Binding DcpSummaryText}" TextColor="{StaticResource Gray300}" FontSize="12" HorizontalTextAlignment="End" />
+                            </Grid>
+                        </Border>
+
+                        <Label Text="Thinking" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
+                                <Label Text="Thinking mode" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Column="1" IsToggled="{Binding ThinkingEnabled}" />
+                                <Label Grid.Row="1" Text="Verbose (Plan + Answer)" TextColor="{StaticResource Gray400}" FontSize="13" />
+                                <Switch Grid.Row="1" Grid.Column="1" IsToggled="{Binding ThinkingVerbose}" />
+                            </Grid>
+                        </Border>
+
+                        <Label Text="Answers" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto" RowSpacing="12">
+                                <Label Text="Structured answers" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Switch Grid.Column="1" IsToggled="{Binding StructuredAnswers}" />
+                            </Grid>
+                        </Border>
+
+                    </VerticalStackLayout>
+                </ScrollView>
 
             </Border>
         </Grid>

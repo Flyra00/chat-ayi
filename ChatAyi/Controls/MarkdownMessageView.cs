@@ -15,10 +15,23 @@ public sealed class MarkdownMessageView : ContentView
         string.Empty,
         propertyChanged: (b, _, __) => ((MarkdownMessageView)b).OnTextChanged());
 
+    public static readonly BindableProperty RoleProperty = BindableProperty.Create(
+        nameof(Role),
+        typeof(string),
+        typeof(MarkdownMessageView),
+        string.Empty,
+        propertyChanged: (b, _, __) => ((MarkdownMessageView)b).OnRoleChanged());
+
     public string Text
     {
         get => (string)GetValue(TextProperty);
         set => SetValue(TextProperty, value);
+    }
+
+    public string Role
+    {
+        get => (string)GetValue(RoleProperty);
+        set => SetValue(RoleProperty, value);
     }
 
     private readonly VerticalStackLayout _root = new()
@@ -33,10 +46,28 @@ public sealed class MarkdownMessageView : ContentView
 
     public MarkdownMessageView()
     {
-        _plain.Style = GetStyle("ChatMessageText");
+        ApplyRoleStyles();
         _plain.LineBreakMode = LineBreakMode.WordWrap;
         _root.Add(_plain);
         Content = _root;
+    }
+
+    private void OnRoleChanged()
+    {
+        ApplyRoleStyles();
+        OnTextChanged();
+    }
+
+    private bool IsUserRole => string.Equals(Role, "user", StringComparison.OrdinalIgnoreCase);
+
+    private Color MessageTextColor => GetColor(IsUserRole ? "ChatUserBubbleText" : "ChatAssistantBubbleText", IsUserRole ? Color.FromArgb("#F4FAF4") : Color.FromArgb("#E6E8E6"));
+
+    private Style MessageTextStyle => GetStyle(IsUserRole ? "UserBubbleTextStyle" : "AssistantBubbleTextStyle") ?? GetStyle("ChatMessageText");
+
+    private void ApplyRoleStyles()
+    {
+        _plain.Style = MessageTextStyle;
+        _plain.TextColor = MessageTextColor;
     }
 
     private void OnTextChanged()
@@ -350,7 +381,8 @@ public sealed class MarkdownMessageView : ContentView
     {
         return new Label
         {
-            Style = GetStyle("ChatMessageText"),
+            Style = MessageTextStyle,
+            TextColor = MessageTextColor,
             LineBreakMode = LineBreakMode.WordWrap,
             FormattedText = ParseInline(text)
         };
@@ -370,7 +402,7 @@ public sealed class MarkdownMessageView : ContentView
         {
             FontFamily = "OpenSansSemibold",
             FontSize = size,
-            TextColor = GetColor("Gray100", Colors.White),
+            TextColor = MessageTextColor,
             LineHeight = 1.2,
             LineBreakMode = LineBreakMode.WordWrap,
             FormattedText = ParseInline(text)
@@ -391,7 +423,7 @@ public sealed class MarkdownMessageView : ContentView
         {
             FontFamily = "OpenSansRegular",
             FontSize = 13,
-            TextColor = GetColor("Gray300", Colors.LightGray),
+            TextColor = MessageTextColor,
             LineHeight = 1.3,
             LineBreakMode = LineBreakMode.WordWrap,
             FormattedText = ParseInline(text)
@@ -435,7 +467,8 @@ public sealed class MarkdownMessageView : ContentView
 
         var t = new Label
         {
-            Style = GetStyle("ChatMessageText"),
+            Style = MessageTextStyle,
+            TextColor = MessageTextColor,
             LineBreakMode = LineBreakMode.WordWrap,
             FormattedText = ParseInline(text)
         };
@@ -460,7 +493,7 @@ public sealed class MarkdownMessageView : ContentView
         {
             FontFamily = "Consolas",
             FontSize = 12.5,
-            TextColor = GetColor("Gray100", Colors.White),
+            TextColor = MessageTextColor,
             LineHeight = 1.2,
             Text = code,
             LineBreakMode = LineBreakMode.WordWrap,
@@ -526,7 +559,7 @@ public sealed class MarkdownMessageView : ContentView
             {
                 FontFamily = "OpenSansSemibold",
                 FontSize = 13,
-                TextColor = GetColor("Gray200", Colors.LightGray),
+                TextColor = MessageTextColor,
                 LineBreakMode = LineBreakMode.WordWrap,
                 FormattedText = ParseInline(cell)
             };
@@ -541,7 +574,8 @@ public sealed class MarkdownMessageView : ContentView
                 var cell = c < row.Count ? row[c] : string.Empty;
                 var lbl = new Label
                 {
-                    Style = GetStyle("ChatMessageText"),
+                    Style = MessageTextStyle,
+                    TextColor = MessageTextColor,
                     FontSize = 13,
                     LineBreakMode = LineBreakMode.WordWrap,
                     FormattedText = ParseInline(cell)
@@ -594,7 +628,7 @@ public sealed class MarkdownMessageView : ContentView
                     {
                         Text = inner,
                         FontFamily = "Consolas",
-                        TextColor = GetColor("Gray200", Colors.LightGray)
+                        TextColor = MessageTextColor
                     });
                     i = end + 1;
                     continue;
@@ -608,7 +642,7 @@ public sealed class MarkdownMessageView : ContentView
                 if (end > i)
                 {
                     var inner = text.Substring(i + 2, end - i - 2);
-                    fs.Spans.Add(new Span { Text = inner, FontAttributes = FontAttributes.Bold });
+                    fs.Spans.Add(new Span { Text = inner, FontAttributes = FontAttributes.Bold, TextColor = MessageTextColor });
                     i = end + 2;
                     continue;
                 }
@@ -621,7 +655,7 @@ public sealed class MarkdownMessageView : ContentView
                 if (end > i)
                 {
                     var inner = text.Substring(i + 1, end - i - 1);
-                    fs.Spans.Add(new Span { Text = inner, FontAttributes = FontAttributes.Italic });
+                    fs.Spans.Add(new Span { Text = inner, FontAttributes = FontAttributes.Italic, TextColor = MessageTextColor });
                     i = end + 1;
                     continue;
                 }
@@ -630,7 +664,7 @@ public sealed class MarkdownMessageView : ContentView
             // Plain chunk until next token
             var next = NextInlineToken(text, i);
             var chunk = next <= i ? text.Substring(i, 1) : text.Substring(i, next - i);
-            fs.Spans.Add(new Span { Text = chunk });
+            fs.Spans.Add(new Span { Text = chunk, TextColor = MessageTextColor });
             i = next <= i ? i + 1 : next;
         }
 

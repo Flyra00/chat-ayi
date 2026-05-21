@@ -7,9 +7,24 @@ namespace ChatAyi
         public App()
         {
             Debug.WriteLine("=== App constructor started ===");
-            
-            InitializeComponent();
-            Debug.WriteLine("=== InitializeComponent completed ===");
+
+            try
+            {
+                InitializeComponent();
+                Debug.WriteLine("=== InitializeComponent completed ===");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("=== InitializeComponent FAILED ===");
+                Debug.WriteLine(ex.ToString());
+                if (ex.InnerException is not null)
+                {
+                    Debug.WriteLine("=== InitializeComponent INNER EXCEPTION ===");
+                    Debug.WriteLine(ex.InnerException.ToString());
+                }
+
+                throw;
+            }
 
             Debug.WriteLine("=== Styles loaded from App.xaml merged dictionaries ===");
             

@@ -104,6 +104,19 @@ dotnet build ChatAyi/ChatAyi.csproj -f net8.0-android
 dotnet build ChatAyi/ChatAyi.csproj -f net8.0-windows10.0.19041.0
 ```
 
+## Build troubleshooting
+
+Kalau muncul error `Access to path ... is denied` pada `obj/bin/android/assets/resizetizer`, lihat panduan:
+
+- [`docs/BUILD_TROUBLESHOOTING.md`](docs/BUILD_TROUBLESHOOTING.md)
+
+Quick cleanup:
+
+```powershell
+scripts\clean-build-artifacts.ps1
+scripts\clean-build-artifacts.ps1 -IncludeVs
+```
+
 ## Commands
 
 - `/search <query>` - web-grounded answer with strict output template:

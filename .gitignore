@@ -1,9 +1,14 @@
 ## .NET / MAUI
 bin/
 obj/
+**/bin/
+**/obj/
 bin-alt/
 obj-alt/
 .vs/
+.idea/
+artifacts/
+TestResults/
 *.user
 *.suo
 *.pdb

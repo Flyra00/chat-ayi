@@ -3,87 +3,138 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="ChatAyi.Pages.GetStartedPage"
              Shell.NavBarIsVisible="False"
-             BackgroundColor="{StaticResource NvidiaDarker}">
+             Background="{StaticResource GetStartedPageBackgroundBrush}">
 
-    <Grid x:Name="Root" Opacity="0" Padding="24" RowDefinitions="Auto,*,Auto" RowSpacing="18">
+    <Grid x:Name="Root"
+          Style="{StaticResource GetStartedRootStyle}"
+          Opacity="0"
+          RowDefinitions="Auto,*,Auto">
 
-        <!-- Header / badge -->
-        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
-            <Border StrokeThickness="0" Padding="10,6" BackgroundColor="{StaticResource NvidiaGreen}" StrokeShape="RoundRectangle 999">
-                <Label Text="CHATAYI" TextColor="Black" FontFamily="OpenSansSemibold" FontSize="12" />
+        <!-- Header -->
+        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" VerticalOptions="Start">
+            <Border Style="{StaticResource GetStartedBadgeStyle}">
+                <Label Text="CHATAYI"
+                       TextColor="Black"
+                       FontFamily="OpenSansSemibold"
+                       FontSize="12" />
             </Border>
 
             <Label Grid.Column="1"
-                   Text="Cerberas API"
-                   TextColor="{StaticResource Gray300}"
-                   VerticalTextAlignment="Center"
+                   Text="Chat AI cepat dan fleksibel"
+                   Style="{StaticResource ChatHeaderSubtitle}"
                    HorizontalTextAlignment="End"
-                   FontSize="12" />
+                   VerticalTextAlignment="Center" />
         </Grid>
 
-        <!-- Main content -->
         <ScrollView Grid.Row="1">
-            <VerticalStackLayout Spacing="18">
+            <VerticalStackLayout HorizontalOptions="Center" MaximumWidthRequest="620" Spacing="14">
 
-                <Border Stroke="{StaticResource Gray900}"
-                        StrokeThickness="1"
-                        StrokeShape="RoundRectangle 18"
-                        Padding="18"
-                        BackgroundColor="{StaticResource NvidiaDark}">
-
-                    <VerticalStackLayout Spacing="14">
-                        <Label Text="Chat langsung dengan AI"
-                               TextColor="White"
-                               FontFamily="OpenSansSemibold"
-                               FontSize="34" />
-
-                        <Label Text="Mulai percakapan, dapat jawaban cepat, dan lanjutkan diskusi kapan saja."
-                               TextColor="{StaticResource Gray200}"
-                               FontSize="14" />
-
-                        <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
-                            <Grid ColumnDefinitions="18,*" ColumnSpacing="10">
-                                <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Start" Margin="0,6,0,0" />
-                                <Label Grid.Column="1" Text="Respon cepat dan relevan" TextColor="{StaticResource Gray100}" />
-                            </Grid>
-                            <Grid Grid.Row="1" ColumnDefinitions="18,*" ColumnSpacing="10">
-                                <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Start" Margin="0,6,0,0" />
-                                <Label Grid.Column="1" Text="Satu layar, fokus untuk chat" TextColor="{StaticResource Gray100}" />
-                            </Grid>
-                            <Grid Grid.Row="2" ColumnDefinitions="18,*" ColumnSpacing="10">
-                                <BoxView WidthRequest="8" HeightRequest="8" CornerRadius="4" BackgroundColor="{StaticResource NvidiaGreen}" VerticalOptions="Start" Margin="0,6,0,0" />
-                                <Label Grid.Column="1" Text="Siap integrasi Cerberas API" TextColor="{StaticResource Gray100}" />
-                            </Grid>
+                <!-- Hero card -->
+                <Border Style="{StaticResource GetStartedHeroCardStyle}">
+                    <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="14">
+                        <Grid Grid.RowSpan="3" ColumnDefinitions="*,Auto" RowDefinitions="Auto,*" InputTransparent="True">
+                            <Border WidthRequest="112" HeightRequest="112"
+                                    BackgroundColor="#1C76B900"
+                                    StrokeThickness="0"
+                                    StrokeShape="RoundRectangle 999"
+                                    HorizontalOptions="End"
+                                    VerticalOptions="Start"
+                                    TranslationX="30"
+                                    TranslationY="-26" />
+                            <Border WidthRequest="150" HeightRequest="150"
+                                    BackgroundColor="#121B76B9"
+                                    StrokeThickness="0"
+                                    StrokeShape="RoundRectangle 999"
+                                    HorizontalOptions="Start"
+                                    VerticalOptions="End"
+                                    TranslationX="-42"
+                                    TranslationY="38" />
+                            <BoxView Grid.RowSpan="2"
+                                     Grid.ColumnSpan="2"
+                                     HeightRequest="1"
+                                     BackgroundColor="#2076B900"
+                                     VerticalOptions="End"
+                                     Margin="0,0,0,0" />
                         </Grid>
 
-                    </VerticalStackLayout>
+                        <Label Text="Mulai chat dengan AI"
+                               Style="{StaticResource GetStartedHeroTitleStyle}"
+                               MaximumWidthRequest="380" />
+
+                        <Label Grid.Row="1"
+                               Text="Ruang chat yang ringan, fokus, dan siap dipakai untuk cari info, nulis, atau simpan konteks penting."
+                               Style="{StaticResource GetStartedHeroSubtitleStyle}"
+                               MaximumWidthRequest="510" />
+
+                        <Grid Grid.Row="2" RowDefinitions="Auto,Auto,Auto" RowSpacing="9">
+                            <Grid ColumnDefinitions="22,*" ColumnSpacing="10">
+                                <Border WidthRequest="18" HeightRequest="18" StrokeThickness="0" BackgroundColor="#2276B900" StrokeShape="RoundRectangle 999" />
+                                <Label Grid.Column="1" Text="Respons cepat dengan tampilan yang bersih" Style="{StaticResource GetStartedBenefitTextStyle}" />
+                            </Grid>
+                            <Grid Grid.Row="1" ColumnDefinitions="22,*" ColumnSpacing="10">
+                                <Border WidthRequest="18" HeightRequest="18" StrokeThickness="0" BackgroundColor="#2276B900" StrokeShape="RoundRectangle 999" />
+                                <Label Grid.Column="1" Text="Tools mudah dijangkau dari satu tombol +" Style="{StaticResource GetStartedBenefitTextStyle}" />
+                            </Grid>
+                            <Grid Grid.Row="2" ColumnDefinitions="22,*" ColumnSpacing="10">
+                                <Border WidthRequest="18" HeightRequest="18" StrokeThickness="0" BackgroundColor="#2276B900" StrokeShape="RoundRectangle 999" />
+                                <Label Grid.Column="1" Text="Ringan dan nyaman dipakai di Android portrait" Style="{StaticResource GetStartedBenefitTextStyle}" />
+                            </Grid>
+                        </Grid>
+                    </Grid>
                 </Border>
 
-                <Border StrokeThickness="0" StrokeShape="RoundRectangle 18" Padding="14">
-                    <Border.Background>
-                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                            <GradientStop Color="#0d0d0d" Offset="0" />
-                            <GradientStop Color="#1a1a1a" Offset="1" />
-                        </LinearGradientBrush>
-                    </Border.Background>
-
+                <!-- Preview card -->
+                <Border Style="{StaticResource GetStartedPreviewCardStyle}">
                     <VerticalStackLayout Spacing="10">
-                        <Label Text="Tips" TextColor="{StaticResource Gray200}" FontFamily="OpenSansSemibold" FontSize="12" />
-                        <Label Text="Coba mulai dengan: &quot;Buatkan prompt untuk CV&quot; atau &quot;Jelaskan konsep async/await&quot;."
-                               TextColor="{StaticResource Gray100}" />
+                        <Label Text="Preview chat" FontFamily="OpenSansSemibold" FontSize="12" TextColor="{StaticResource Gray300}" />
+
+                        <Border Background="{StaticResource ChatUserBubbleBrush}"
+                                Stroke="{StaticResource ChatUserBubbleStrokeBrush}"
+                                StrokeThickness="1"
+                                StrokeShape="RoundRectangle 16"
+                                Padding="12,10"
+                                HorizontalOptions="End">
+                            <Label Text="Buatkan prompt CV yang singkat dan profesional." TextColor="{StaticResource ChatUserBubbleText}" FontSize="13" LineBreakMode="WordWrap" />
+                        </Border>
+
+                        <Border Background="{StaticResource ChatAssistantBubbleBrush}"
+                                Stroke="{StaticResource ChatAssistantBubbleStrokeBrush}"
+                                StrokeThickness="1"
+                                StrokeShape="RoundRectangle 16"
+                                Padding="12,10"
+                                HorizontalOptions="Start">
+                            <Label Text="Siap. Ini versi yang ringkas, jelas, dan bisa langsung dipakai." TextColor="{StaticResource ChatAssistantBubbleText}" FontSize="13" LineBreakMode="WordWrap" />
+                        </Border>
                     </VerticalStackLayout>
                 </Border>
+
+                <!-- Tips chips -->
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="Coba mulai dengan" FontFamily="OpenSansSemibold" FontSize="12" TextColor="{StaticResource Gray300}" />
+                    <FlexLayout Wrap="Wrap" JustifyContent="Start">
+                        <Border Style="{StaticResource GetStartedChipStyle}" Margin="0,0,8,8">
+                            <Label Text="Buatkan prompt CV" Style="{StaticResource GetStartedChipTextStyle}" />
+                        </Border>
+                        <Border Style="{StaticResource GetStartedChipStyle}" Margin="0,0,8,8">
+                            <Label Text="Jelaskan async/await" Style="{StaticResource GetStartedChipTextStyle}" />
+                        </Border>
+                        <Border Style="{StaticResource GetStartedChipStyle}" Margin="0,0,8,8">
+                            <Label Text="Cari informasi terbaru" Style="{StaticResource GetStartedChipTextStyle}" />
+                        </Border>
+                    </FlexLayout>
+                </VerticalStackLayout>
 
             </VerticalStackLayout>
         </ScrollView>
 
         <!-- CTA -->
-        <VerticalStackLayout Grid.Row="2" Spacing="10">
-            <Button x:Name="StartButton" Text="Get Started" Clicked="OnGetStartedClicked" />
+        <VerticalStackLayout Grid.Row="2" HorizontalOptions="Center" MaximumWidthRequest="620" Spacing="10">
+            <Button x:Name="StartButton"
+                    Text="Get Started"
+                    Clicked="OnGetStartedClicked"
+                    Style="{StaticResource GetStartedCtaButtonStyle}" />
             <Label Text="Dengan melanjutkan, aplikasi akan menyiapkan halaman chat."
-                   TextColor="{StaticResource Gray400}"
-                   FontSize="12"
-                   HorizontalTextAlignment="Center" />
+                   Style="{StaticResource GetStartedFooterTextStyle}" />
         </VerticalStackLayout>
 
     </Grid>

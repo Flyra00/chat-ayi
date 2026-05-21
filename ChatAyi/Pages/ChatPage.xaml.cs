@@ -48,6 +48,11 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private bool _structuredAnswers = true;
     private bool _isSettingsOpen;
 
+    // ── Plus-menu / composer tool state ──
+    private bool _isToolMenuOpen;
+    private string _activeComposerTool = "none";
+    private bool _isMoreMenuOpen;
+
     private bool _enableOfflineFallback = true;
     private bool _queueWhileOffline = true;
     private bool _enableDcp = true;
@@ -78,6 +83,11 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private bool _syncingSessionSelection;
     private bool _sessionInitialized;
     private bool _forceFreshSessionOnAppear;
+
+    // ── Session isolation guards ──
+    private int _sessionSwitchVersion;
+    private int _sendVersion;
+    private bool _isSwitchingSession;
 
     private static readonly string[] CerebrasModels =
     {
@@ -356,7 +366,21 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             if (_syncingSessionSelection || value is null)
                 return;
 
-            _ = SwitchToSessionAsync(value.SessionId);
+            var version = ++_sessionSwitchVersion;
+            Debug.WriteLine($"[SessionFlow] selected={value.SessionId} version={version}");
+            _ = SwitchToSessionAsync(value.SessionId, version);
+        }
+    }
+
+    public bool IsSwitchingSession
+    {
+        get => _isSwitchingSession;
+        private set
+        {
+            if (_isSwitchingSession == value) return;
+            _isSwitchingSession = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(CanSend));
         }
     }
 
@@ -446,6 +470,63 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             OnPropertyChanged();
         }
     }
+
+    // ── Plus-menu bindable properties ──
+
+    public bool IsToolMenuOpen
+    {
+        get => _isToolMenuOpen;
+        set
+        {
+            if (_isToolMenuOpen == value) return;
+            _isToolMenuOpen = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public bool IsMoreMenuOpen
+    {
+        get => _isMoreMenuOpen;
+        set
+        {
+            if (_isMoreMenuOpen == value) return;
+            _isMoreMenuOpen = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public string ActiveComposerTool
+    {
+        get => _activeComposerTool;
+        set
+        {
+            var v = (value ?? "none").Trim();
+            if (string.Equals(_activeComposerTool, v, StringComparison.Ordinal)) return;
+            _activeComposerTool = v;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasActiveComposerTool));
+            OnPropertyChanged(nameof(ActiveComposerToolLabel));
+            OnPropertyChanged(nameof(ComposerPlaceholder));
+        }
+    }
+
+    public bool HasActiveComposerTool => !string.Equals(_activeComposerTool, "none", StringComparison.Ordinal);
+
+    public string ActiveComposerToolLabel => _activeComposerTool switch
+    {
+        "search" => "🌐 Web search",
+        "browse" => "🔗 Browse URL",
+        "memory_add" => "💾 Save memory",
+        _ => string.Empty
+    };
+
+    public string ComposerPlaceholder => _activeComposerTool switch
+    {
+        "search" => "Cari apa di web?",
+        "browse" => "Tempel URL atau URL + pertanyaan...",
+        "memory_add" => "Apa yang ingin disimpan?",
+        _ => "Type a message..."
+    };
 
     public bool EnableWebTools
     {
@@ -876,6 +957,197 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private void OnCloseSettingsClicked(object sender, EventArgs e)
     {
         IsSettingsOpen = false;
+    }
+
+    // ── Plus-menu event handlers ──
+
+    private void OnToolMenuClicked(object sender, EventArgs e)
+    {
+        IsMoreMenuOpen = false;
+        IsToolMenuOpen = !IsToolMenuOpen;
+    }
+
+    private void OnToolMenuBackdropTapped(object sender, EventArgs e)
+    {
+        IsToolMenuOpen = false;
+        IsMoreMenuOpen = false;
+    }
+
+    private void OnClearToolModeClicked(object sender, EventArgs e)
+    {
+        ActiveComposerTool = "none";
+    }
+
+    private void OnMoreMenuClicked(object sender, EventArgs e)
+    {
+        IsMoreMenuOpen = !IsMoreMenuOpen;
+    }
+
+    private async void OnToolSelectedClicked(object sender, EventArgs e)
+    {
+        var id = string.Empty;
+
+        // The tap gesture is on the Border, but StyleId is on the inner layout.
+        // Walk children to find the StyleId.
+        View target = null;
+        if (sender is TapGestureRecognizer tgr && tgr.Parent is View tgrParent)
+            target = tgrParent;
+        else if (sender is View sv)
+            target = sv;
+
+        if (target != null)
+        {
+            id = FindStyleIdRecursive(target);
+        }
+
+        IsToolMenuOpen = false;
+        IsMoreMenuOpen = false;
+
+        switch (id)
+        {
+            // Modes that require user input via composer
+            case "search":
+                ActiveComposerTool = "search";
+                return;
+            case "browse":
+                ActiveComposerTool = "browse";
+                return;
+            case "memory_add":
+                ActiveComposerTool = "memory_add";
+                return;
+
+            // Direct-execute commands
+            case "memory_list":
+                await SubmitInternalCommandAsync("/memory list", "📚 Memory list");
+                return;
+            case "retry":
+                await SubmitInternalCommandAsync("/retry", "↻ Retry queued");
+                return;
+            case "thinking_off":
+                await SubmitInternalCommandAsync("/thinking off", "🧠 Thinking: off");
+                return;
+            case "thinking_on":
+                await SubmitInternalCommandAsync("/thinking on", "🧠 Thinking: on");
+                return;
+            case "thinking_verbose":
+                await SubmitInternalCommandAsync("/thinking verbose", "🧠 Thinking: verbose");
+                return;
+            case "memory_on":
+                await SubmitInternalCommandAsync("/memory on", "💾 Memory: on");
+                return;
+            case "memory_off":
+                await SubmitInternalCommandAsync("/memory off", "💾 Memory: off");
+                return;
+            case "memory_status":
+                await SubmitInternalCommandAsync("/memory status", "💾 Memory status");
+                return;
+            case "settings":
+                IsSettingsOpen = true;
+                return;
+        }
+    }
+
+    // ── Plus-menu helpers ──
+
+    private string BuildExecutionPromptFromToolMode(string raw)
+    {
+        raw = (raw ?? string.Empty).Trim();
+        return _activeComposerTool switch
+        {
+            "search" => "/search " + raw,
+            "browse" => "/browse " + raw,
+            "memory_add" => "/memory add preference " + raw,
+            _ => raw
+        };
+    }
+
+    private string BuildDisplayPromptFromToolMode(string raw)
+    {
+        raw = (raw ?? string.Empty).Trim();
+        return _activeComposerTool switch
+        {
+            "search" => "🌐 Web search\n" + raw,
+            "browse" => "🔗 Browse URL\n" + raw,
+            "memory_add" => "💾 Save memory\n" + raw,
+            _ => raw
+        };
+    }
+
+    /// <summary>
+    /// Submits a command that needs no user input (e.g. /memory list, /retry).
+    /// Creates a user bubble with a friendly display prompt, then routes via existing logic.
+    /// </summary>
+    private async Task SubmitInternalCommandAsync(string internalPrompt, string displayPrompt)
+    {
+        if (_isSending) return;
+
+        _isSending = true;
+        OnPropertyChanged(nameof(IsSending));
+        OnPropertyChanged(nameof(CanSend));
+
+        var user = new ChatMessage("user", displayPrompt);
+        var assistant = new ChatMessage("assistant", string.Empty, isEphemeral: true);
+        Messages.Add(user);
+        Messages.Add(assistant);
+
+        _cts.Cancel();
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            // Route through existing command handlers
+            if (TryHandleThinkingCommand(internalPrompt, assistant))
+                return;
+
+            if (TryHandleRetryCommand(internalPrompt, assistant))
+                return;
+
+            if (await TryHandleMemoryCommandAsync(internalPrompt, assistant, _cts.Token))
+                return;
+
+            // If nothing handled it, show error
+            assistant.Content = "Command not recognized: " + internalPrompt;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            assistant.Content = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _isSending = false;
+            OnPropertyChanged(nameof(IsSending));
+            OnPropertyChanged(nameof(CanSend));
+        }
+    }
+    private static string FindStyleIdRecursive(View view)
+    {
+        if (view == null) return string.Empty;
+
+        var sid = (view.StyleId ?? string.Empty).Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(sid)) return sid;
+
+        if (view is Layout layout)
+        {
+            foreach (var child in layout.Children)
+            {
+                if (child is View childView)
+                {
+                    var found = FindStyleIdRecursive(childView);
+                    if (!string.IsNullOrEmpty(found)) return found;
+                }
+            }
+        }
+        else if (view is ContentView cv && cv.Content is View cvChild)
+        {
+            return FindStyleIdRecursive(cvChild);
+        }
+        else if (view is Border border && border.Content is View borderChild)
+        {
+            return FindStyleIdRecursive(borderChild);
+        }
+
+        return string.Empty;
     }
 
     private static async Task CopyMessageAsync(object param)
@@ -1528,6 +1800,92 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         return fallback;
     }
 
+    /// <summary>
+    /// Returns the sessionId that matches the user's current UI selection.
+    /// If SelectedSession is valid, ensures catalog agrees; otherwise creates a new session.
+    /// This prevents the send path from using a stale catalog sessionId.
+    /// </summary>
+    private async Task<string> GetCurrentUiSessionIdForSendAsync(CancellationToken ct)
+    {
+        var selectedId = SelectedSession?.SessionId;
+
+        if (SessionMeta.IsSafeSessionId(selectedId))
+        {
+            try
+            {
+                var activeId = await _sessionCatalog.GetActiveSessionIdAsync(ct);
+                if (!string.Equals(activeId, selectedId, StringComparison.Ordinal))
+                {
+                    Debug.WriteLine($"[SessionFlow] active mismatch, fixing active={activeId} selected={selectedId}");
+                    await _sessionCatalog.SetActiveSessionIdAsync(selectedId, ct);
+                }
+            }
+            catch
+            {
+                Debug.WriteLine($"[SessionFlow] catalog sync failed, using selected={selectedId}");
+            }
+
+            return selectedId;
+        }
+
+        // No valid UI selection — fall back to catalog or create new
+        Debug.WriteLine("[SessionFlow] no valid SelectedSession, falling back to GetOrCreate");
+        return await GetOrCreateActiveSessionIdAsync(ct);
+    }
+
+    /// <summary>
+    /// Builds diagnostic info for /session debug command.
+    /// </summary>
+    private async Task<string> BuildSessionDebugInfoAsync(string sessionId, CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("### Session Debug Info");
+        sb.AppendLine();
+        sb.AppendLine($"- **ActiveSessionId (catalog):** {sessionId}");
+        sb.AppendLine($"- **SelectedSession.SessionId:** {SelectedSession?.SessionId ?? "(null)"}");
+        sb.AppendLine($"- **Messages.Count:** {Messages.Count}");
+        sb.AppendLine($"- **SessionSwitchVersion:** {_sessionSwitchVersion}");
+        sb.AppendLine($"- **SendVersion:** {_sendVersion}");
+        sb.AppendLine($"- **IsSwitchingSession:** {_isSwitchingSession}");
+        sb.AppendLine($"- **IsSending:** {_isSending}");
+        sb.AppendLine($"- **Provider:** {CurrentProvider}");
+        sb.AppendLine($"- **Model:** {CurrentModel}");
+
+        var match = string.Equals(sessionId, SelectedSession?.SessionId, StringComparison.Ordinal);
+        sb.AppendLine($"- **Session Match:** {(match ? "✅ OK" : "❌ MISMATCH")}");
+
+        try
+        {
+            var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
+            sb.AppendLine($"- **Transcript entries:** {transcript.Count}");
+
+            var last3 = transcript.TakeLast(3).ToList();
+            if (last3.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("**Last 3 transcript entries:**");
+                foreach (var entry in last3)
+                {
+                    var shortContent = entry.Content.Length > 60 ? entry.Content.Substring(0, 60) + "..." : entry.Content;
+                    sb.AppendLine($"- `{entry.Role}`: {shortContent}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"- **Transcript read error:** {ex.Message}");
+        }
+
+        try
+        {
+            var memoryCount = (await _personalMemoryStore.ListAsync(ct)).Count;
+            sb.AppendLine($"- **Personal memory count:** {memoryCount}");
+        }
+        catch { }
+
+        return sb.ToString();
+    }
+
     private async void OnNewSessionClicked(object sender, EventArgs e)
     {
         await CreateNewSessionAsync();
@@ -1536,31 +1894,72 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private async Task CreateNewSessionAsync()
     {
         var sessionId = Guid.NewGuid().ToString("N");
+        var version = ++_sessionSwitchVersion;
+        ++_sendVersion;
+        Debug.WriteLine($"[SessionFlow] new-session={sessionId} version={version}");
+
         var ct = CancellationToken.None;
+        IsSwitchingSession = true;
 
-        await _sessionCatalog.TouchAsync(sessionId, "New Session", DateTimeOffset.UtcNow, ct);
-        await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
+        try
+        {
+            await _sessionCatalog.TouchAsync(sessionId, "New Session", DateTimeOffset.UtcNow, ct);
+            await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
 
-        ResetEphemeralStateForSessionSwitch();
-        await HydrateMessagesAsync(sessionId, ct);
-        await RefreshSessionSelectorAsync(ct, sessionId);
+            ResetEphemeralStateForSessionSwitch();
 
-        _sessionInitialized = true;
+            if (version != _sessionSwitchVersion)
+            {
+                Debug.WriteLine($"[SessionFlow] stale new-session ignored target={sessionId}");
+                return;
+            }
+
+            await HydrateMessagesAsync(sessionId, ct);
+            await RefreshSessionSelectorAsync(ct, sessionId);
+
+            _sessionInitialized = true;
+            Debug.WriteLine($"[SessionFlow] new-session-complete active={sessionId} messages={Messages.Count}");
+        }
+        finally
+        {
+            if (version == _sessionSwitchVersion)
+                IsSwitchingSession = false;
+        }
     }
 
-    private async Task SwitchToSessionAsync(string sessionId)
+    private async Task SwitchToSessionAsync(string sessionId, int version)
     {
         if (!SessionMeta.IsSafeSessionId(sessionId))
             return;
 
-        var ct = CancellationToken.None;
-        await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
+        ++_sendVersion;
+        IsSwitchingSession = true;
+        Debug.WriteLine($"[SessionFlow] switch-start target={sessionId} version={version}");
 
-        ResetEphemeralStateForSessionSwitch();
-        await HydrateMessagesAsync(sessionId, ct);
-        await RefreshSessionSelectorAsync(ct, sessionId);
+        try
+        {
+            var ct = CancellationToken.None;
+            await _sessionCatalog.SetActiveSessionIdAsync(sessionId, ct);
 
-        _sessionInitialized = true;
+            ResetEphemeralStateForSessionSwitch();
+
+            if (version != _sessionSwitchVersion)
+            {
+                Debug.WriteLine($"[SessionFlow] stale switch ignored target={sessionId}");
+                return;
+            }
+
+            await HydrateMessagesAsync(sessionId, ct);
+            await RefreshSessionSelectorAsync(ct, sessionId);
+
+            _sessionInitialized = true;
+            Debug.WriteLine($"[SessionFlow] switch-complete active={sessionId} messages={Messages.Count}");
+        }
+        finally
+        {
+            if (version == _sessionSwitchVersion)
+                IsSwitchingSession = false;
+        }
     }
 
     private async Task EnsureSessionCatalogInitializedAsync(CancellationToken ct)
@@ -1616,6 +2015,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         _cts.Cancel();
         _cts = new CancellationTokenSource();
         _isMemoryTemporarilyOff = false;
+        ++_sendVersion;
 
         _isSending = false;
 
@@ -1627,10 +2027,12 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         OnPropertyChanged(nameof(IsSending));
         OnPropertyChanged(nameof(CanSend));
         NotifyOfflineUi();
+        Debug.WriteLine($"[SessionFlow] ephemeral-reset sendVersion={_sendVersion}");
     }
 
     private async Task HydrateMessagesAsync(string sessionId, CancellationToken ct)
     {
+        Debug.WriteLine($"[SessionFlow] hydrate-start session={sessionId}");
         var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
         var visible = transcript
             .Where(x => x.Role is "user" or "assistant")
@@ -1643,6 +2045,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             foreach (var item in visible)
                 Messages.Add(item);
         });
+        Debug.WriteLine($"[SessionFlow] hydrate-complete session={sessionId} messages={visible.Count}");
     }
 
     private async Task<SessionContextSnapshot> BuildSessionContextSnapshotAsync(string sessionId, CancellationToken ct)
@@ -1652,6 +2055,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             var recent = await _sessions.ReadRecentChatAsync(sessionId, 6, ct);
             var transcript = await _sessions.ReadTranscriptAsync(sessionId, ct);
             var summary = TryExtractSummaryBullets(transcript);
+            Debug.WriteLine($"[SessionFlow] context session={sessionId} recentTurns={recent.Count}");
+            if (!string.Equals(sessionId, SelectedSession?.SessionId, StringComparison.Ordinal))
+                Debug.WriteLine($"[SessionFlow][WARN] context session != selected session selected={SelectedSession?.SessionId}");
             return SessionContextSnapshot.Create(sessionId, recent, summary);
         }
         catch
@@ -1796,6 +2202,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         var safeContent = (content ?? string.Empty).Trim();
         var safeModel = (model ?? string.Empty).Trim();
         var title = safeRole == "user" ? BuildSessionTitle(titleSource) : string.Empty;
+
+        Debug.WriteLine($"[SessionFlow] append role={safeRole} session={sessionId}");
+        if (!string.Equals(sessionId, SelectedSession?.SessionId, StringComparison.Ordinal))
+            Debug.WriteLine($"[SessionFlow][WARN] append session != selected session selected={SelectedSession?.SessionId}");
 
         try
         {
@@ -2371,12 +2781,34 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         }
     }
 
-    public bool CanSend => !_isSending && !string.IsNullOrWhiteSpace(InputText);
+    public bool CanSend => !_isSending && !_isSwitchingSession && !string.IsNullOrWhiteSpace(InputText);
 
     private async void OnSendClicked(object sender, EventArgs e)
     {
-        var prompt = InputText?.Trim();
-        if (string.IsNullOrWhiteSpace(prompt) || _isSending) return;
+        var rawInput = InputText?.Trim();
+        if (string.IsNullOrWhiteSpace(rawInput) || _isSending || _isSwitchingSession) return;
+
+        // ── Plus-menu tool mode routing ──
+        string executionPrompt;
+        string displayPrompt;
+
+        if (HasActiveComposerTool)
+        {
+            executionPrompt = BuildExecutionPromptFromToolMode(rawInput);
+            displayPrompt = BuildDisplayPromptFromToolMode(rawInput);
+            ActiveComposerTool = "none";
+        }
+        else
+        {
+            executionPrompt = rawInput;
+            displayPrompt = rawInput;
+        }
+
+        // Close tool menu if open
+        IsToolMenuOpen = false;
+        IsMoreMenuOpen = false;
+
+        var prompt = executionPrompt;
 
         _isSending = true;
         OnPropertyChanged(nameof(IsSending));
@@ -2384,13 +2816,15 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
         InputText = string.Empty;
 
-        var user = new ChatMessage("user", prompt);
+        var user = new ChatMessage("user", displayPrompt);
         var assistant = new ChatMessage("assistant", string.Empty, isEphemeral: true);
         Messages.Add(user);
         Messages.Add(assistant);
 
         _cts.Cancel();
         _cts = new CancellationTokenSource();
+        var sendVersion = ++_sendVersion;
+        Debug.WriteLine($"[SessionFlow] send-start sendVersion={sendVersion} prompt={displayPrompt.Substring(0, Math.Min(50, displayPrompt.Length))}");
 
         try
         {
@@ -2418,7 +2852,15 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
             }
 
-            var sessionId = await GetOrCreateActiveSessionIdAsync(_cts.Token);
+            var sessionId = await GetCurrentUiSessionIdForSendAsync(_cts.Token);
+            Debug.WriteLine($"[SessionFlow] send selected={SelectedSession?.SessionId} active={sessionId} sendVer={sendVersion}");
+
+            if (sendVersion != _sendVersion)
+            {
+                Debug.WriteLine($"[SessionFlow] stale send aborted sendVer={sendVersion}");
+                return;
+            }
+
             var persona = _personaProfileStore.LoadPersona();
             var profile = _personaProfileStore.LoadProfile();
             var provider = CurrentProvider;
@@ -2427,6 +2869,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     : provider == ChatApiClient.Provider.Inception ? "mercury-2"
                     : "gpt-oss-120b")
                 : CurrentModel.Trim();
+
+            if (prompt.StartsWith("/session debug", StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.WriteLine("[Routing] branch=session-debug");
+                var debugInfo = await BuildSessionDebugInfoAsync(sessionId, _cts.Token);
+                assistant.Content = debugInfo;
+                return;
+            }
 
             if (prompt.StartsWith("/remember", StringComparison.OrdinalIgnoreCase))
             {
@@ -2561,7 +3011,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     searchQuery));
                 searchRequestMessages = ApplyDcp(searchRequestMessages, provider);
 
-                await AppendSessionRecordAsync(sessionId, "user", "/search " + searchQuery, searchModel, searchQuery, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "user", displayPrompt, searchModel, searchQuery, _cts.Token);
 
                 assistant.Content = string.Empty;
 
@@ -2589,6 +3039,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
+                        if (sendVersion != _sendVersion) return;
                         assistant.Content += chunk;
                     });
                 }
@@ -2598,6 +3049,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     var chunk = searchPending.ToString();
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
+                        if (sendVersion != _sendVersion) return;
                         assistant.Content += chunk;
                     });
                 }
@@ -2690,7 +3142,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     q));
                 browseRequestMessages = ApplyDcp(browseRequestMessages, provider);
 
-                await AppendSessionRecordAsync(sessionId, "user", "/browse " + url + (question.Length > 0 ? " " + question : ""), browseModel, q, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "user", displayPrompt, browseModel, q, _cts.Token);
 
                 assistant.Content = string.Empty;
 
@@ -2718,6 +3170,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
+                        if (sendVersion != _sendVersion) return;
                         assistant.Content += chunk;
                     });
                 }
@@ -2727,6 +3180,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     var chunk = browsePending.ToString();
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
+                        if (sendVersion != _sendVersion) return;
                         assistant.Content += chunk;
                     });
                 }
@@ -2775,7 +3229,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             Debug.WriteLine($"[Memory] injectedBlock={(relevantMemories.Count > 0 ? "yes" : "no")}");
             requestMessages = ApplyDcp(requestMessages.ToList(), provider);
 
-            await AppendSessionRecordAsync(sessionId, "user", prompt, model, prompt, _cts.Token);
+            await AppendSessionRecordAsync(sessionId, "user", displayPrompt, model, displayPrompt, _cts.Token);
 
             // Throttle UI updates to avoid ANR/freezes on Android.
             var pending = new StringBuilder();
@@ -2825,6 +3279,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
+                        if (sendVersion != _sendVersion) return;
                         assistant.Content += chunk;
                     });
                 }
@@ -2876,6 +3331,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var chunk = pending.ToString();
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
+                    if (sendVersion != _sendVersion) return;
                     assistant.Content += chunk;
                 });
             }
