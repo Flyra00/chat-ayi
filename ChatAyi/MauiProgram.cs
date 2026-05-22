@@ -128,6 +128,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<SessionCatalogStore>();
         builder.Services.AddSingleton<PersonaProfileStore>();
         builder.Services.AddSingleton<PromptContextAssembler>();
+        builder.Services.AddSingleton<AuthStore>();
 
         return builder.Build();
     }

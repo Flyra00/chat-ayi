@@ -1,12 +1,19 @@
+using System.Diagnostics;
+using ChatAyi.Services;
+
 namespace ChatAyi.Pages;
 
 public partial class GetStartedPage : ContentPage
 {
     private bool _hasAnimated;
+    private readonly AuthStore _auth;
 
     public GetStartedPage()
     {
         InitializeComponent();
+
+        var services = Application.Current?.Handler?.MauiContext?.Services;
+        _auth = services?.GetService<AuthStore>() ?? new AuthStore();
     }
 
     protected override async void OnAppearing()
@@ -30,11 +37,14 @@ public partial class GetStartedPage : ContentPage
         StartButton.IsEnabled = false;
         try
         {
-            await Shell.Current.GoToAsync("chat?fresh=1");
+            var hasAccount = await _auth.HasAccountAsync();
+            var route = hasAccount ? "login" : "register";
+            Debug.WriteLine($"[GetStarted] hasAccount={hasAccount}, navigating to {route}");
+            await Shell.Current.GoToAsync(route);
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[GetStarted] Navigation to chat failed: {ex}");
+            Debug.WriteLine($"[GetStarted] Auth navigation failed: {ex}");
             await DisplayAlert("Navigation Error", ex.Message, "OK");
         }
         finally

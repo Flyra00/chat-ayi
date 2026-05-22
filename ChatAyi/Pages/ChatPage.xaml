@@ -469,6 +469,24 @@
                             </Grid>
                         </Border>
 
+                        <Label Text="Account" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                        <Border Style="{StaticResource SettingsSectionCardStyle}">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
+                                <Label Text="{Binding DisplayName}" TextColor="{StaticResource Gray100}" FontSize="14" FontFamily="OpenSansSemibold" />
+                                <Label Grid.Column="1" Text="{Binding DisplayEmail}" TextColor="{StaticResource Gray400}" FontSize="12" HorizontalTextAlignment="End" />
+                                <Button Grid.Row="1" Grid.ColumnSpan="2"
+                                        Text="Logout"
+                                        Clicked="OnLogoutClicked"
+                                        BackgroundColor="#4A0000"
+                                        TextColor="#FF6B6B"
+                                        FontFamily="OpenSansSemibold"
+                                        FontSize="13"
+                                        HeightRequest="36"
+                                        CornerRadius="10"
+                                        HorizontalOptions="Fill" />
+                            </Grid>
+                        </Border>
+
                     </VerticalStackLayout>
                 </ScrollView>
 

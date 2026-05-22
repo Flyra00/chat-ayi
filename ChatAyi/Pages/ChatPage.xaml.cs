@@ -36,6 +36,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private readonly SessionCatalogStore _sessionCatalog;
     private readonly PersonaProfileStore _personaProfileStore;
     private readonly PromptContextAssembler _promptContextAssembler;
+    private readonly AuthStore _auth;
     private CancellationTokenSource _cts;
     private bool _isSending;
     private string _inputText = string.Empty;
@@ -49,6 +50,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private bool _isSettingsOpen;
 
     // ── Plus-menu / composer tool state ──
+    private bool _authRedirecting;
     private bool _isToolMenuOpen;
     private string _activeComposerTool = "none";
     private bool _isMoreMenuOpen;
@@ -258,6 +260,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             ChatApiClient.Provider.Inception => "Inception",
             _ => "Cerebras"
         };
+
+    public string DisplayName => _auth.GetDisplayName();
+    public string DisplayEmail => _auth.GetEmail();
 
     private ChatApiClient.Provider CurrentProvider
         => ProviderIndex switch
@@ -636,6 +641,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         _sessionCatalog = services?.GetService<SessionCatalogStore>() ?? new SessionCatalogStore();
         _personaProfileStore = services?.GetService<PersonaProfileStore>() ?? new PersonaProfileStore();
         _promptContextAssembler = services?.GetService<PromptContextAssembler>() ?? new PromptContextAssembler();
+        _auth = services?.GetService<AuthStore>() ?? new AuthStore();
 
         CopyMessageCommand = new Command<object>(async (param) => await CopyMessageAsync(param));
         ToggleSettingsCommand = new Command(() => IsSettingsOpen = !IsSettingsOpen);
@@ -959,6 +965,23 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         IsSettingsOpen = false;
     }
 
+    private async void OnLogoutClicked(object sender, EventArgs e)
+    {
+        var confirm = await DisplayAlert(
+            "Logout",
+            $"Keluar dari akun {_auth.GetDisplayName()}?{Environment.NewLine}Session chat, memory, dan API key tidak akan dihapus.",
+            "Logout",
+            "Batal");
+
+        if (!confirm) return;
+
+        _auth.Logout();
+        IsSettingsOpen = false;
+
+        Debug.WriteLine("[ChatPage] Logout, redirecting to login");
+        await Shell.Current.GoToAsync("login?guarded=1");
+    }
+
     // ── Plus-menu event handlers ──
 
     private void OnToolMenuClicked(object sender, EventArgs e)
@@ -1172,6 +1195,32 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     {
         base.OnAppearing();
 
+        // ── Auth guard: redirect to login if not authenticated ──
+        if (!_authRedirecting)
+        {
+            try
+            {
+                if (!_auth.IsLoggedIn())
+                {
+                    _authRedirecting = true;
+                    try
+                    {
+                        await Shell.Current.GoToAsync("login?guarded=1");
+                        return;
+                    }
+                    finally
+                    {
+                        _authRedirecting = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ChatPage] Auth guard failed: {ex.Message}");
+                // If auth guard fails, let the page continue loading instead of crashing.
+            }
+        }
+
         try
         {
             if (_forceFreshSessionOnAppear)
@@ -1232,6 +1281,8 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             OnPropertyChanged(nameof(QueueWhileOffline));
             OnPropertyChanged(nameof(EnableDcp));
             OnPropertyChanged(nameof(DcpSummaryText));
+            OnPropertyChanged(nameof(DisplayName));
+            OnPropertyChanged(nameof(DisplayEmail));
             NotifyOfflineUi();
 
             try
@@ -2744,8 +2795,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             return false;
 
         var text = input.Trim();
-        if (!string.Equals(text, "/search", StringComparison.OrdinalIgnoreCase)
-            && !text.StartsWith("/search ", StringComparison.OrdinalIgnoreCase))
+        if (!text.StartsWith("/search", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (text.Length > 7 && !char.IsWhiteSpace(text[7]))
             return false;
 
         query = text.Length > 7 ? text.Substring(7).Trim() : string.Empty;
@@ -3020,6 +3073,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var searchSw = Stopwatch.StartNew();
                 var searchLastFlushMs = 0L;
                 const int SearchFlushIntervalMs = 140;
+                var searchFinalContentSet = false;
 
                 await foreach (var delta in _api
                                    .StreamChatAsync(provider, searchRequestMessages, searchModel, enableThinking: ThinkingEnabled, _cts.Token)
@@ -3040,29 +3094,44 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
                         if (sendVersion != _sendVersion) return;
+                        if (searchFinalContentSet) return;
+                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
                         assistant.Content += chunk;
                     });
                 }
 
-                if (searchPending.Length > 0)
+                // Flush remaining pending chunk on UI thread before final replacement
+                await MainThread.InvokeOnMainThreadAsync(() =>
                 {
-                    var chunk = searchPending.ToString();
-                    MainThread.BeginInvokeOnMainThread(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        assistant.Content += chunk;
-                    });
-                }
+                    if (sendVersion != _sendVersion) return;
+                    if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
 
+                    if (searchPending.Length > 0)
+                    {
+                        assistant.Content += searchPending.ToString();
+                    }
+                });
+
+                string validated = null;
                 if (searchCaptured.Length > 0)
                 {
-                    var validated = ValidateAndCleanSearchOutput(searchCaptured.ToString(), results, browsedPages, grounding);
+                    validated = ValidateAndCleanSearchOutput(searchCaptured.ToString(), results, browsedPages, grounding);
                     if (unhealthy && !validated.Contains("terbatas", StringComparison.OrdinalIgnoreCase)
                                    && !validated.Contains("belum", StringComparison.OrdinalIgnoreCase))
                     {
                         validated = PrependNaturalEvidenceWarning(validated, grounding.Health, grounding.Diagnostics);
                     }
-                    assistant.Content = validated;
+
+                    // Set final validated output on UI thread + prevent stale streaming callbacks
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        if (sendVersion != _sendVersion) return;
+                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
+
+                        assistant.Content = validated;
+                        searchFinalContentSet = true;
+                    });
+
                     await AppendSessionRecordAsync(sessionId, "assistant", validated, searchModel, string.Empty, _cts.Token);
                 }
 
@@ -3151,6 +3220,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 var browseSw = Stopwatch.StartNew();
                 var browseLastFlushMs = 0L;
                 const int BrowseFlushIntervalMs = 140;
+                var browseFinalContentSet = false;
 
                 await foreach (var delta in _api
                                    .StreamChatAsync(provider, browseRequestMessages, browseModel, enableThinking: ThinkingEnabled, _cts.Token)
@@ -3171,24 +3241,39 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     MainThread.BeginInvokeOnMainThread(() =>
                     {
                         if (sendVersion != _sendVersion) return;
+                        if (browseFinalContentSet) return;
+                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
                         assistant.Content += chunk;
                     });
                 }
 
-                if (browsePending.Length > 0)
+                // Flush remaining pending chunk on UI thread before final replacement
+                await MainThread.InvokeOnMainThreadAsync(() =>
                 {
-                    var chunk = browsePending.ToString();
-                    MainThread.BeginInvokeOnMainThread(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        assistant.Content += chunk;
-                    });
-                }
+                    if (sendVersion != _sendVersion) return;
+                    if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
 
+                    if (browsePending.Length > 0)
+                    {
+                        assistant.Content += browsePending.ToString();
+                    }
+                });
+
+                string strictBrowse = null;
                 if (browseCaptured.Length > 0)
                 {
-                    var strictBrowse = EnforceStrictBrowseTemplate(browseCaptured.ToString(), page.Url);
-                    assistant.Content = strictBrowse;
+                    strictBrowse = EnforceStrictBrowseTemplate(browseCaptured.ToString(), page.Url);
+
+                    // Set final browse output on UI thread + prevent stale streaming callbacks
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        if (sendVersion != _sendVersion) return;
+                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
+
+                        assistant.Content = strictBrowse;
+                        browseFinalContentSet = true;
+                    });
+
                     await AppendSessionRecordAsync(sessionId, "assistant", strictBrowse, browseModel, string.Empty, _cts.Token);
                 }
 

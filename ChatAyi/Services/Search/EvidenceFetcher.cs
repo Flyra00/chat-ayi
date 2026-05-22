@@ -61,9 +61,9 @@ public sealed class EvidenceFetcher
 
                 perDomain[domain] = current + 1;
             }
-            catch
+            catch (Exception ex)
             {
-                // keep trying other candidates
+                System.Diagnostics.Debug.WriteLine($"[EvidenceFetcher] fetch failed for {candidate.Url}: {ex.Message}");
             }
         }
 

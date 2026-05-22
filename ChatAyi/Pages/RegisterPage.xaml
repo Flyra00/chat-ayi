@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="ChatAyi.Pages.RegisterPage"
+             Shell.NavBarIsVisible="False"
+             BackgroundColor="{StaticResource ChatBackground}">
+
+    <Grid x:Name="Root"
+          Padding="24,48,24,24"
+          Opacity="0"
+          RowDefinitions="Auto,*,Auto">
+
+        <!-- Header badge -->
+        <HorizontalStackLayout Spacing="10" VerticalOptions="Start">
+            <Border BackgroundColor="{StaticResource NvidiaGreen}"
+                    StrokeThickness="0"
+                    StrokeShape="RoundRectangle 8"
+                    Padding="10,5">
+                <Label Text="CHATAYI"
+                       TextColor="Black"
+                       FontFamily="OpenSansSemibold"
+                       FontSize="11" />
+            </Border>
+            <Label Text="Buat akun baru"
+                   TextColor="{StaticResource Gray300}"
+                   FontFamily="OpenSansRegular"
+                   FontSize="13"
+                   VerticalTextAlignment="Center" />
+        </HorizontalStackLayout>
+
+        <!-- Form card -->
+        <ScrollView Grid.Row="1" VerticalOptions="Center">
+            <Border BackgroundColor="{StaticResource ChatSurface}"
+                    Stroke="{StaticResource ChatStrokeBrush}"
+                    StrokeThickness="1"
+                    StrokeShape="RoundRectangle 20"
+                    Padding="24,28"
+                    MaximumWidthRequest="440"
+                    HorizontalOptions="Center">
+                <VerticalStackLayout Spacing="16">
+
+                    <Label Text="Buat akun"
+                           TextColor="White"
+                           FontFamily="OpenSansSemibold"
+                           FontSize="22" />
+
+                    <Label Text="Simpan profil lokal untuk masuk ke ChatAyi."
+                           TextColor="{StaticResource Gray300}"
+                           FontFamily="OpenSansRegular"
+                           FontSize="13"
+                           LineBreakMode="WordWrap" />
+
+                    <!-- Display Name -->
+                    <VerticalStackLayout Spacing="6">
+                        <Label Text="Display name"
+                               TextColor="{StaticResource Gray200}"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="12" />
+                        <Border BackgroundColor="{StaticResource ChatSurface2}"
+                                Stroke="{StaticResource ChatStrokeBrush}"
+                                StrokeThickness="1"
+                                StrokeShape="RoundRectangle 12"
+                                Padding="14,0">
+                            <Entry x:Name="DisplayNameEntry"
+                                   Placeholder="Nama kamu"
+                                   PlaceholderColor="{StaticResource Gray500}"
+                                   TextColor="White"
+                                   FontSize="14"
+                                   FontFamily="OpenSansRegular"
+                                   BackgroundColor="Transparent" />
+                        </Border>
+                    </VerticalStackLayout>
+
+                    <!-- Email / Username -->
+                    <VerticalStackLayout Spacing="6">
+                        <Label Text="Email atau username"
+                               TextColor="{StaticResource Gray200}"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="12" />
+                        <Border BackgroundColor="{StaticResource ChatSurface2}"
+                                Stroke="{StaticResource ChatStrokeBrush}"
+                                StrokeThickness="1"
+                                StrokeShape="RoundRectangle 12"
+                                Padding="14,0">
+                            <Entry x:Name="EmailEntry"
+                                   Placeholder="email@contoh.com"
+                                   PlaceholderColor="{StaticResource Gray500}"
+                                   TextColor="White"
+                                   FontSize="14"
+                                   FontFamily="OpenSansRegular"
+                                   Keyboard="Email"
+                                   BackgroundColor="Transparent" />
+                        </Border>
+                    </VerticalStackLayout>
+
+                    <!-- Password -->
+                    <VerticalStackLayout Spacing="6">
+                        <Label Text="Password"
+                               TextColor="{StaticResource Gray200}"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="12" />
+                        <Border BackgroundColor="{StaticResource ChatSurface2}"
+                                Stroke="{StaticResource ChatStrokeBrush}"
+                                StrokeThickness="1"
+                                StrokeShape="RoundRectangle 12"
+                                Padding="14,0">
+                            <Entry x:Name="PasswordEntry"
+                                   Placeholder="Minimal 6 karakter"
+                                   PlaceholderColor="{StaticResource Gray500}"
+                                   TextColor="White"
+                                   FontSize="14"
+                                   FontFamily="OpenSansRegular"
+                                   IsPassword="True"
+                                   BackgroundColor="Transparent" />
+                        </Border>
+                    </VerticalStackLayout>
+
+                    <!-- Confirm Password -->
+                    <VerticalStackLayout Spacing="6">
+                        <Label Text="Konfirmasi password"
+                               TextColor="{StaticResource Gray200}"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="12" />
+                        <Border BackgroundColor="{StaticResource ChatSurface2}"
+                                Stroke="{StaticResource ChatStrokeBrush}"
+                                StrokeThickness="1"
+                                StrokeShape="RoundRectangle 12"
+                                Padding="14,0">
+                            <Entry x:Name="ConfirmPasswordEntry"
+                                   Placeholder="Ketik ulang password"
+                                   PlaceholderColor="{StaticResource Gray500}"
+                                   TextColor="White"
+                                   FontSize="14"
+                                   FontFamily="OpenSansRegular"
+                                   IsPassword="True"
+                                   BackgroundColor="Transparent" />
+                        </Border>
+                    </VerticalStackLayout>
+
+                    <!-- Error label -->
+                    <Label x:Name="ErrorLabel"
+                           TextColor="#FF6B6B"
+                           FontFamily="OpenSansRegular"
+                           FontSize="12"
+                           IsVisible="False"
+                           LineBreakMode="WordWrap" />
+
+                    <!-- Submit -->
+                    <Button x:Name="RegisterButton"
+                            Text="Create account"
+                            Clicked="OnRegisterClicked"
+                            BackgroundColor="{StaticResource NvidiaGreen}"
+                            TextColor="Black"
+                            FontFamily="OpenSansSemibold"
+                            FontSize="15"
+                            HeightRequest="50"
+                            CornerRadius="24" />
+
+                    <!-- Login link -->
+                    <HorizontalStackLayout HorizontalOptions="Center" Spacing="4">
+                        <Label Text="Sudah punya akun?"
+                               TextColor="{StaticResource Gray400}"
+                               FontFamily="OpenSansRegular"
+                               FontSize="13"
+                               VerticalTextAlignment="Center" />
+                        <Label x:Name="LoginLink"
+                               Text="Login"
+                               TextColor="{StaticResource NvidiaGreen}"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="13"
+                               VerticalTextAlignment="Center"
+                               TextDecorations="Underline">
+                            <Label.GestureRecognizers>
+                                <TapGestureRecognizer Tapped="OnLoginLinkTapped" />
+                            </Label.GestureRecognizers>
+                        </Label>
+                    </HorizontalStackLayout>
+
+                </VerticalStackLayout>
+            </Border>
+        </ScrollView>
+
+        <!-- Footer -->
+        <Label Grid.Row="2"
+               Text="Data disimpan secara lokal di perangkat."
+               TextColor="{StaticResource Gray500}"
+               FontFamily="OpenSansRegular"
+               FontSize="11"
+               HorizontalTextAlignment="Center" />
+
+    </Grid>
+</ContentPage>
