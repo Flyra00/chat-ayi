@@ -15,7 +15,7 @@ public sealed class ChatApiClient
     {
         Cerebras,
         NvidiaIntegrate,
-        Inception
+        Inception,
     }
 
     private readonly HttpClient _cerebras;
@@ -90,7 +90,7 @@ public sealed class ChatApiClient
                 {
                     Provider.NvidiaIntegrate => NvidiaKeyStorageKey,
                     Provider.Inception => InceptionKeyStorageKey,
-                    _ => CerebrasKeyStorageKey
+                            _ => CerebrasKeyStorageKey
                 };
                 SecureStorage.Remove(storageKey);
                 throw new HttpRequestException("Unauthorized. API key cleared; please enter it again.");
@@ -223,7 +223,7 @@ public sealed class ChatApiClient
         req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
 
 #if DEBUG
-        Debug.WriteLine($"[{provider}] POST {http.BaseAddress}{path} stream=true; payload_bytes={Encoding.UTF8.GetByteCount(json)}");
+        Debug.WriteLine($"[{provider}] POST {http.BaseAddress.ToString().TrimEnd('/')}{path} stream=true; payload_bytes={Encoding.UTF8.GetByteCount(json)}");
 #endif
 
         using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -237,7 +237,7 @@ public sealed class ChatApiClient
                 {
                     Provider.NvidiaIntegrate => NvidiaKeyStorageKey,
                     Provider.Inception => InceptionKeyStorageKey,
-                    _ => CerebrasKeyStorageKey
+                            _ => CerebrasKeyStorageKey
                 };
                 SecureStorage.Remove(storageKey);
                 throw new HttpRequestException("Unauthorized. API key cleared; please enter it again.");
@@ -307,16 +307,40 @@ public sealed class ChatApiClient
         var sb = new StringBuilder();
         var sawAnyDelta = false;
         var sawAnyEvent = false;
+
+        // Per-delta idle timeout: if no SSE event is received for 15s, stop waiting.
+        // This prevents hangs when the provider pauses mid-stream without closing.
+        const int IdleTimeoutMs = 15_000;
+        var idleSw = Stopwatch.StartNew();
+
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var line = await reader.ReadLineAsync(ct);
+
+            // Check idle timeout before reading next line.
+            if (idleSw.ElapsedMilliseconds > IdleTimeoutMs)
+            {
+                Debug.WriteLine($"[{provider}] SSE idle timeout after {IdleTimeoutMs}ms (no complete event)");
+                yield break;
+            }
+
+            // Read with short polling to allow idle timeout checks.
+            var readTask = reader.ReadLineAsync(ct).AsTask();
+            var pollTask = Task.Delay(1000);
+            var done = await Task.WhenAny(readTask, pollTask).ConfigureAwait(false);
+
+            if (done == pollTask)
+                continue; // Recheck idle timeout and loop.
+
+            var line = await readTask;
             if (line is null)
                 break;
 
-            // Event boundary.
+            // Event boundary — reset idle timer.
             if (line.Length == 0)
             {
+                idleSw.Restart();
+
                 if (sb.Length == 0) continue;
 
                 var data = sb.ToString().Trim();
@@ -334,7 +358,6 @@ public sealed class ChatApiClient
 #endif
 
                 // Fast-path: skip parsing chunks that cannot contain output text.
-                // This is important for reasoning models that stream lots of reasoning-only deltas.
                 if (!data.Contains("\"content\"", StringComparison.Ordinal)
                     && !data.Contains("\"text\"", StringComparison.Ordinal)
                     && !data.Contains("\"message\"", StringComparison.Ordinal))
@@ -493,7 +516,7 @@ public sealed class ChatApiClient
                 {
                     Provider.NvidiaIntegrate => NvidiaKeyStorageKey,
                     Provider.Inception => InceptionKeyStorageKey,
-                    _ => CerebrasKeyStorageKey
+                            _ => CerebrasKeyStorageKey
                 };
                 SecureStorage.Remove(storageKey);
                 throw new HttpRequestException("Unauthorized. API key cleared; please enter it again.");

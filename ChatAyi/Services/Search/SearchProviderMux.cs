@@ -11,14 +11,21 @@ public sealed class SearchProviderMux
     private readonly SearxngSearchClient _searxng;
     private readonly HttpClient _http;
     private readonly DdgSearchClient _ddgFallback;
+    private readonly TimeSpan _globalSearchTimeout;
 
     public SearchProviderMux(SearxngSearchClient searxng, HttpClient http, DdgSearchClient ddgFallback = null)
     {
         _searxng = searxng;
         _http = http;
         _ddgFallback = ddgFallback;
+        _globalSearchTimeout = TimeSpan.FromSeconds(30);
     }
 
+    /// <summary>
+    /// Runs the full search pipeline (SearXNG → Jina → GitHub → Wikipedia → DDG)
+    /// with a global timeout so the user never waits more than ~30s for the search phase.
+    /// Each provider is wrapped in try/catch so one failure doesn't break the chain.
+    /// </summary>
     public async Task<IReadOnlyList<SearchCandidate>> SearchCandidatesAsync(
         string query,
         int maxCandidates,
@@ -32,12 +39,22 @@ public sealed class SearchProviderMux
         maxCandidates = Math.Clamp(Math.Max(maxCandidates, 8), 8, 12);
         var combined = new List<SearchCandidate>();
 
+        // Global timeout: the entire search pipeline must complete within this budget.
+        // User cancellation (ct) still works immediately — this is a safety net.
+        using var globalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        globalCts.CancelAfter(_globalSearchTimeout);
+        var globalCt = globalCts.Token;
+
         // 1) SearXNG primary
         try
         {
-            var searx = await SearchSearxAsync(query, maxCandidates, intent, ct);
+            var searx = await SearchSearxAsync(query, maxCandidates, intent, globalCt);
             MergeCandidates(combined, searx, maxCandidates, intent);
             Debug.WriteLine($"[SearchMux] after-searx count={combined.Count}");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            Debug.WriteLine("[SearchMux] searx timed out (global)");
         }
         catch (Exception ex)
         {
@@ -45,13 +62,17 @@ public sealed class SearchProviderMux
         }
 
         // 2) Jina booster only
-        if (NeedsMoreCandidates(combined, intent))
+        if (NeedsMoreCandidates(combined, intent) && !globalCt.IsCancellationRequested)
         {
             try
             {
-                var jina = await SearchJinaAsync(query, maxCandidates, intent, ct);
+                var jina = await SearchJinaAsync(query, maxCandidates, intent, globalCt);
                 MergeCandidates(combined, jina, maxCandidates, intent);
                 Debug.WriteLine($"[SearchMux] after-jina count={combined.Count}");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Debug.WriteLine("[SearchMux] jina timed out (global)");
             }
             catch (Exception ex)
             {
@@ -60,13 +81,17 @@ public sealed class SearchProviderMux
         }
 
         // 3) GitHub only for code/docs intent
-        if (ShouldUseGitHub(intent) && NeedsMoreCandidates(combined, intent))
+        if (ShouldUseGitHub(intent) && NeedsMoreCandidates(combined, intent) && !globalCt.IsCancellationRequested)
         {
             try
             {
-                var github = await SearchGitHubAsync(query, maxCandidates, intent, ct);
+                var github = await SearchGitHubAsync(query, maxCandidates, intent, globalCt);
                 MergeCandidates(combined, github, maxCandidates, intent);
                 Debug.WriteLine($"[SearchMux] after-github count={combined.Count}");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Debug.WriteLine("[SearchMux] github timed out (global)");
             }
             catch (Exception ex)
             {
@@ -75,13 +100,17 @@ public sealed class SearchProviderMux
         }
 
         // 4) Wikipedia last resort only
-        if (NeedsMoreCandidates(combined, intent))
+        if (NeedsMoreCandidates(combined, intent) && !globalCt.IsCancellationRequested)
         {
             try
             {
-                var wiki = await SearchWikipediaAsync(query, 1, intent, ct);
+                var wiki = await SearchWikipediaAsync(query, 1, intent, globalCt);
                 MergeCandidates(combined, wiki, maxCandidates, intent);
                 Debug.WriteLine($"[SearchMux] after-wikipedia count={combined.Count}");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Debug.WriteLine("[SearchMux] wikipedia timed out (global)");
             }
             catch (Exception ex)
             {
@@ -90,14 +119,18 @@ public sealed class SearchProviderMux
         }
 
         // 5) DDG Booster
-        if (ShouldBoostWithDdg(combined, intent) && _ddgFallback is not null)
+        if (ShouldBoostWithDdg(combined, intent) && _ddgFallback is not null && !globalCt.IsCancellationRequested)
         {
             try
             {
                 Debug.WriteLine("[SearchMux] SearXNG/Jina results thin → boosting with DDG...");
-                var ddg = await SearchDdgAsync(query, maxCandidates, intent, ct);
+                var ddg = await SearchDdgAsync(query, maxCandidates, intent, globalCt);
                 MergeCandidates(combined, ddg, maxCandidates, intent);
                 Debug.WriteLine($"[SearchMux] after-ddg count={combined.Count}");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Debug.WriteLine("[SearchMux] ddg timed out (global)");
             }
             catch (Exception ex)
             {
@@ -125,8 +158,13 @@ public sealed class SearchProviderMux
         req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
         req.Headers.TryAddWithoutValidation("Accept", "text/plain, text/markdown;q=0.9, */*;q=0.8");
 
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-        var raw = await resp.Content.ReadAsStringAsync(ct);
+        // Jina can be slow; give it a per-call timeout of 10s.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+        var timeoutToken = timeoutCts.Token;
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutToken);
+        var raw = await resp.Content.ReadAsStringAsync(timeoutToken);
         if (!resp.IsSuccessStatusCode || string.IsNullOrWhiteSpace(raw))
             return new List<SearchCandidate>();
 

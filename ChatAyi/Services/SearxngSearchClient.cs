@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Text.Json;
@@ -7,27 +8,50 @@ namespace ChatAyi.Services;
 public sealed class SearxngSearchClient
 {
     private readonly HttpClient _http;
-    private readonly IReadOnlyList<string> _instancePool;
     private readonly TimeSpan _perInstanceTimeout;
+    private readonly TimeSpan _globalSearchTimeout;
+
+    // ── Runtime-mutable instance pool (updated via Settings UI) ─────────
+    private IReadOnlyList<string> _instancePool;
+    private string _customBaseUrl;
+    private bool _userSetCustomUrl;
+    private readonly object _poolLock = new();
+    private readonly IReadOnlyList<string> _fallbackInstances;
+
+    // ── Dead instance tracking ────────────────────────────────────────
+    // Instances that recently failed are skipped to avoid wasting time.
+    // They're retried after the expiry window.
+    private static readonly ConcurrentDictionary<string, DateTime> _deadInstances = new();
+    private static readonly TimeSpan DeadInstanceRetryAfter = TimeSpan.FromSeconds(60);
+
+    // Default concurrency: probe up to 3 instances in parallel per batch.
+    private const int BatchSize = 3;
 
     /// <summary>
     /// Default SearXNG instance pool. These are public volunteer-maintained instances
-    /// selected for relative stability and geographic proximity (Asia-friendly).
-    /// Order matters — the first instance is tried first, then fallbacks in sequence.
+    /// sourced from searx.space (confirmed online with HTTP 200 as of May 2026).
+    /// Rotated away from overloaded instances that commonly block datacenter IPs.
     /// </summary>
     private static readonly string[] DefaultInstancePool =
     {
-        "https://searx.be",
-        "https://search.sapti.me",
-        "https://searxng.site",
-        "https://search.bus-hit.me",
-        "https://priv.au",
-        "https://searx.tiekoetter.com",
-        "https://search.ononoki.org",
+        "https://searxng.cups.moe",
+        "https://searxng.canine.tools",
+        "https://searx.sev.monster",
+        "https://search.bladerunn.in",
+        "https://sx.catgirl.cloud",
+        "https://grep.vim.wtf",
+        "https://search.internetsucks.net",
+        "https://search.minus27315.dev",
+        "https://etsi.me",
+        "https://kantan.cat",
+        "https://copp.gg",
+        "https://search.ctq.ro",
+        "https://searx.oloke.xyz",
+        "https://searx.namejeff.xyz",
     };
 
     public SearxngSearchClient(HttpClient http, string baseUrl)
-        : this(http, baseUrl, fallbackInstances: null, perInstanceTimeout: TimeSpan.FromSeconds(8))
+        : this(http, baseUrl, fallbackInstances: null, perInstanceTimeout: TimeSpan.FromSeconds(5))
     {
     }
 
@@ -38,17 +62,40 @@ public sealed class SearxngSearchClient
         TimeSpan perInstanceTimeout)
     {
         _http = http;
-        _perInstanceTimeout = perInstanceTimeout.TotalSeconds > 0 ? perInstanceTimeout : TimeSpan.FromSeconds(8);
+        _perInstanceTimeout = perInstanceTimeout.TotalSeconds > 0 ? perInstanceTimeout : TimeSpan.FromSeconds(5);
+        _globalSearchTimeout = TimeSpan.FromSeconds(Math.Max(_perInstanceTimeout.TotalSeconds * 3, 15));
+        _fallbackInstances = fallbackInstances ?? Array.Empty<string>();
+        _customBaseUrl = NormalizeBaseUrl(baseUrl);
+        _userSetCustomUrl = !string.IsNullOrWhiteSpace(baseUrl);
 
-        // Build ordered instance pool: user-specified primary first, then fallbacks.
+        RebuildPool();
+    }
+
+    /// <summary>
+    /// Updates the primary SearXNG URL at runtime (called from Settings UI).
+    /// Clears dead-instance tracking so the new URL gets a fair try.
+    /// </summary>
+    public void SetCustomBaseUrl(string url)
+    {
+        lock (_poolLock)
+        {
+            _customBaseUrl = NormalizeBaseUrl(url);
+            _userSetCustomUrl = !string.IsNullOrWhiteSpace(url);
+            _deadInstances.Clear();
+            RebuildPool();
+        }
+        Debug.WriteLine($"[SearXNG] Custom URL updated: {_customBaseUrl}; userSet={_userSetCustomUrl} pool={_instancePool.Count} instances");
+    }
+
+    private void RebuildPool()
+    {
         var pool = new List<string>();
-        var primary = NormalizeBaseUrl(baseUrl);
-        pool.Add(primary);
+        pool.Add(_customBaseUrl);
 
         // Add user-provided fallback instances (from env var or constructor).
-        if (fallbackInstances is { Count: > 0 })
+        if (_fallbackInstances.Count > 0)
         {
-            foreach (var fb in fallbackInstances)
+            foreach (var fb in _fallbackInstances)
             {
                 var normalized = NormalizeBaseUrl(fb);
                 if (!pool.Contains(normalized, StringComparer.OrdinalIgnoreCase))
@@ -56,8 +103,9 @@ public sealed class SearxngSearchClient
             }
         }
 
-        // If pool is still just one instance, backfill from default pool (skip duplicates).
-        if (pool.Count < 3)
+        // If pool still has very few instances and no user-specified custom URL,
+        // backfill with public defaults so we have a reasonable number of candidates.
+        if (!_userSetCustomUrl && pool.Count < 3)
         {
             foreach (var defaultInstance in DefaultInstancePool)
             {
@@ -68,62 +116,156 @@ public sealed class SearxngSearchClient
         }
 
         _instancePool = pool.AsReadOnly();
-        Debug.WriteLine($"[SearXNG] Pool initialized with {_instancePool.Count} instances: {string.Join(", ", _instancePool)}");
     }
 
     public sealed record SearchResult(string Title, string Url, string Snippet);
 
+    /// <summary>
+    /// Searches across the instance pool using batched parallel probing.
+    /// Instances are tried in batches of 3 in parallel. The first batch with
+    /// a successful response wins. Dead instances (recently failed) are skipped.
+    /// A global timeout bounds the entire SearXNG phase.
+    /// </summary>
     public async Task<List<SearchResult>> SearchAsync(string query, int maxResults, CancellationToken ct)
     {
         query = (query ?? string.Empty).Trim();
         if (query.Length == 0) return new List<SearchResult>();
-
         maxResults = Math.Clamp(maxResults, 1, 10);
 
-        Exception lastException = null;
-
-        for (var i = 0; i < _instancePool.Count; i++)
+        // Build active list: skip recently-dead instances, reset if all are dead.
+        var now = DateTime.UtcNow;
+        var active = _instancePool
+            .Where(url => !_deadInstances.TryGetValue(url, out var deadUntil) || deadUntil <= now)
+            .ToList();
+        if (active.Count == 0)
         {
-            var instanceUrl = _instancePool[i];
-            var instanceNumber = i + 1;
+            // All instances are marked dead — reset and try everything.
+            _deadInstances.Clear();
+            active = _instancePool.ToList();
+            Debug.WriteLine("[SearXNG] All instances were dead — resetting death marks.");
+        }
 
-            Debug.WriteLine($"[SearXNG] Trying instance #{instanceNumber}/{_instancePool.Count}: {instanceUrl}");
+        // Global SearXNG phase timeout so the user doesn't wait forever.
+        using var globalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        globalCts.CancelAfter(_globalSearchTimeout);
+        var globalToken = globalCts.Token;
+
+        // Log which instances we're probing.
+        var skippedCount = _instancePool.Count - active.Count;
+        if (skippedCount > 0)
+            Debug.WriteLine($"[SearXNG] Skipping {skippedCount} recently-dead instances, probing {active.Count} active ones.");
+
+        var attemptCount = 0;
+        while (active.Count > 0)
+        {
+            // Take the next batch
+            var batch = active.Take(BatchSize).ToList();
+            active = active.Skip(BatchSize).ToList();
+            attemptCount += batch.Count;
+
+            var batchResult = await TryProbeBatchAsync(batch, query, maxResults, globalToken);
+
+            if (batchResult is not null)
+            {
+                // First successful batch wins.
+                Debug.WriteLine($"[SearXNG] Batch got {batchResult.Count} results after {attemptCount} instances tried");
+                return batchResult;
+            }
+
+            // Batch failed — try next batch.
+            Debug.WriteLine($"[SearXNG] Batch failed ({batch.Count} instances), trying next batch...");
+
+            if (globalToken.IsCancellationRequested)
+                break;
+        }
+
+        // All batches exhausted or timed out.
+        Debug.WriteLine($"[SearXNG] All {_instancePool.Count} instances exhausted (tried {attemptCount}).");
+
+        // Return empty — caller will fall through to other providers.
+        return new List<SearchResult>();
+    }
+
+    /// <summary>
+    /// Probes a batch of instances in parallel. Returns the first successful response,
+    /// or null if none succeeded.
+    /// </summary>
+    private async Task<List<SearchResult>> TryProbeBatchAsync(
+        List<string> instances, string query, int maxResults, CancellationToken ct)
+    {
+        // Per-batch timeout: don't let a batch of 3 outlive their allowed window.
+        // We do NOT cancel on success — remaining tasks complete in the background
+        // (their dead-marking is based on actual health, not batch cancellation).
+        using var batchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        batchCts.CancelAfter(TimeSpan.FromSeconds(_perInstanceTimeout.TotalSeconds * 1.5));
+
+        var tasks = instances.Select(url => WrapInstanceProbe(url, query, maxResults, batchCts.Token)).ToList();
+
+        while (tasks.Count > 0)
+        {
+            Task<List<SearchResult>> completed;
+            try
+            {
+                completed = await Task.WhenAny(tasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                break;
+            }
+
+            tasks.Remove(completed);
 
             try
             {
-                var results = await TrySearchInstanceAsync(instanceUrl, query, maxResults, ct);
-
+                var results = await completed.ConfigureAwait(false);
                 if (results.Count > 0)
                 {
-                    Debug.WriteLine($"[SearXNG] Instance #{instanceNumber} succeeded: {results.Count} results from {instanceUrl}");
+                    // First successful response wins. Remaining tasks run in background.
                     return results;
                 }
-
-                // Instance returned 0 results — not an error, but try next for better coverage.
-                Debug.WriteLine($"[SearXNG] Instance #{instanceNumber} returned 0 results, trying next...");
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                // User-initiated cancellation — don't retry, just bail.
-                throw;
+                // This instance timed out (per-instance timeout) — continue waiting.
             }
             catch (Exception ex)
             {
-                lastException = ex;
-                var reason = ex is OperationCanceledException ? "timeout" : ex.Message;
-                Debug.WriteLine($"[SearXNG] Instance #{instanceNumber} failed ({reason}), trying next...");
+                Debug.WriteLine($"[SearXNG] Instance probe failed: {ex.Message}");
             }
         }
 
-        // All instances exhausted.
-        Debug.WriteLine($"[SearXNG] All {_instancePool.Count} instances failed/empty.");
+        return null; // No instance in this batch succeeded.
+    }
 
-        if (lastException is not null)
-            throw new HttpRequestException(
-                $"All {_instancePool.Count} SearXNG instances failed. Last error: {lastException.Message}",
-                lastException);
+    /// <summary>
+    /// Wraps TrySearchInstanceAsync with dead-instance tracking.
+    /// On failure (real error, not user cancellation) the instance is marked dead
+    /// for DeadInstanceRetryAfter so we skip it on subsequent queries.
+    /// </summary>
+    private async Task<List<SearchResult>> WrapInstanceProbe(
+        string baseUrl, string query, int maxResults, CancellationToken ct)
+    {
+        try
+        {
+            var results = await TrySearchInstanceAsync(baseUrl, query, maxResults, ct).ConfigureAwait(false);
 
-        return new List<SearchResult>();
+            // Success — clear any previous death mark.
+            _deadInstances.TryRemove(baseUrl, out _);
+            return results;
+        }
+        catch (OperationCanceledException)
+        {
+            // User cancellation — don't mark as dead; just rethrow.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Real failure — mark this instance as dead for a while.
+            var until = DateTime.UtcNow + DeadInstanceRetryAfter;
+            _deadInstances[baseUrl] = until;
+            Debug.WriteLine($"[SearXNG] Marked {baseUrl} dead until {until:HH:mm:ss} ({ex.GetType().Name}: {ex.Message})");
+            throw;
+        }
     }
 
     private async Task<List<SearchResult>> TrySearchInstanceAsync(
@@ -134,7 +276,7 @@ public sealed class SearxngSearchClient
         req.Headers.TryAddWithoutValidation("User-Agent", "ChatAyi/1.0");
         req.Headers.TryAddWithoutValidation("Accept", "application/json");
 
-        // Per-instance timeout — don't let one slow instance block the whole pool.
+        // Per-instance timeout.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_perInstanceTimeout);
 

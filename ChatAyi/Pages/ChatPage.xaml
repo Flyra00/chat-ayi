@@ -82,7 +82,7 @@
                            FontSize="20"
                            TextColor="{StaticResource Gray100}"
                            HorizontalTextAlignment="Center" />
-                    <Label Text="Tulis pesan atau tekan + untuk memakai tools."
+                    <Label Text="Tulis pesan atau tekan + untuk Thinking."
                            FontSize="13"
                            TextColor="{StaticResource Gray400}"
                            HorizontalTextAlignment="Center" />
@@ -92,21 +92,18 @@
                                 HorizontalOptions="Center"
                                 MaximumWidthRequest="380">
                         <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
-                            <Label Text="Web search" Style="{StaticResource EmptyStateChipLabelStyle}" />
+                            <Label Text="Thinking" Style="{StaticResource EmptyStateChipLabelStyle}" />
                         </Border>
                         <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
-                            <Label Text="Browse URL" Style="{StaticResource EmptyStateChipLabelStyle}" />
+                            <Label Text="📄 Attach dokumen" Style="{StaticResource EmptyStateChipLabelStyle}" />
                         </Border>
                         <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
                             <Label Text="Save memory" Style="{StaticResource EmptyStateChipLabelStyle}" />
                         </Border>
-                        <Border Style="{StaticResource EmptyStateChipStyle}" Margin="4">
-                            <Label Text="Jelaskan async/await" Style="{StaticResource EmptyStateChipLabelStyle}" />
-                        </Border>
                     </FlexLayout>
 
                     <Label IsVisible="{Binding ShowCommandTips}"
-                           Text="Tekan + untuk Web search, Browse URL, dan Memory."
+                           Text="Tekan + lalu pilih Thinking untuk riset, baca URL, atau analisis dengan sumber."
                            FontSize="12"
                            TextColor="{StaticResource Gray500}"
                            HorizontalTextAlignment="Center" />
@@ -204,6 +201,16 @@
                                         SemanticProperties.Hint="Clear selected tool" />
                             </HorizontalStackLayout>
                         </Border>
+                        <Border IsVisible="{Binding HasDocumentAttached}"
+                                Style="{StaticResource ActiveToolChipStyle}">
+                            <HorizontalStackLayout Spacing="6">
+                                <Label Text="{Binding DocumentFileInfo}"
+                                       Style="{StaticResource ActiveToolChipLabelStyle}" />
+                                <Button Style="{StaticResource ActiveToolChipCloseButtonStyle}"
+                                        Clicked="OnClearDocumentClicked"
+                                        SemanticProperties.Hint="Hapus dokumen" />
+                            </HorizontalStackLayout>
+                        </Border>
 
                         <Editor Text="{Binding InputText}"
                                 AutoSize="TextChanges"
@@ -247,11 +254,11 @@
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
                         </Border.GestureRecognizers>
-                        <HorizontalStackLayout Spacing="10" StyleId="search">
-                            <Label Text="🌐" Style="{StaticResource ToolMenuIconStyle}" />
+                        <HorizontalStackLayout Spacing="10" StyleId="thinking">
+                            <Label Text="🧠" Style="{StaticResource ToolMenuIconStyle}" />
                             <VerticalStackLayout Spacing="1" VerticalOptions="Center">
-                                <Label Text="Web search" Style="{StaticResource ToolMenuTitleStyle}" />
-                                <Label Text="Cari informasi dari web" Style="{StaticResource ToolMenuSubtitleStyle}" />
+                                <Label Text="Thinking" Style="{StaticResource ToolMenuTitleStyle}" />
+                                <Label Text="Riset, search, dan baca URL otomatis" Style="{StaticResource ToolMenuSubtitleStyle}" />
                             </VerticalStackLayout>
                         </HorizontalStackLayout>
                     </Border>
@@ -260,11 +267,11 @@
                         <Border.GestureRecognizers>
                             <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
                         </Border.GestureRecognizers>
-                        <HorizontalStackLayout Spacing="10" StyleId="browse">
-                            <Label Text="🔗" Style="{StaticResource ToolMenuIconStyle}" />
+                        <HorizontalStackLayout Spacing="10" StyleId="document">
+                            <Label Text="📄" Style="{StaticResource ToolMenuIconStyle}" />
                             <VerticalStackLayout Spacing="1" VerticalOptions="Center">
-                                <Label Text="Browse URL" Style="{StaticResource ToolMenuTitleStyle}" />
-                                <Label Text="Baca/ringkas halaman web" Style="{StaticResource ToolMenuSubtitleStyle}" />
+                                <Label Text="Attach Document" Style="{StaticResource ToolMenuTitleStyle}" />
+                                <Label Text="Baca file .txt, .md, .docx, .pdf" Style="{StaticResource ToolMenuSubtitleStyle}" />
                             </VerticalStackLayout>
                         </HorizontalStackLayout>
                     </Border>
@@ -303,19 +310,6 @@
                     </Border>
 
                     <BoxView HeightRequest="1" BackgroundColor="{StaticResource ChatStroke}" Margin="8,4" />
-
-                    <Border Style="{StaticResource ToolMenuItemStyle}">
-                        <Border.GestureRecognizers>
-                            <TapGestureRecognizer Tapped="OnToolSelectedClicked" />
-                        </Border.GestureRecognizers>
-                        <HorizontalStackLayout Spacing="10" StyleId="thinking_on">
-                            <Label Text="🧠" Style="{StaticResource ToolMenuIconStyle}" />
-                            <VerticalStackLayout Spacing="1" VerticalOptions="Center">
-                                <Label Text="Thinking mode" Style="{StaticResource ToolMenuTitleStyle}" />
-                                <Label Text="Toggle on / off / verbose" Style="{StaticResource ToolMenuSubtitleStyle}" />
-                            </VerticalStackLayout>
-                        </HorizontalStackLayout>
-                    </Border>
 
                     <Border Style="{StaticResource ToolMenuItemStyle}">
                         <Border.GestureRecognizers>
@@ -413,11 +407,31 @@
                             </Grid>
                         </Border>
 
-                        <Label Text="Web Tools" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                    <Label Text="Web Tools" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                    <Border Style="{StaticResource SettingsSectionCardStyle}">
+                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto" RowSpacing="12">
+                            <Label Text="Allow Thinking to use web" TextColor="{StaticResource Gray200}" FontSize="13" />
+                            <Switch Grid.Column="1" IsToggled="{Binding EnableWebTools}" />
+                        </Grid>
+                    </Border>
+
+                        <Label Text="Search" Style="{StaticResource SettingsSectionHeaderStyle}" />
                         <Border Style="{StaticResource SettingsSectionCardStyle}">
-                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto" RowSpacing="12">
-                                <Label Text="Enable web tools" TextColor="{StaticResource Gray200}" FontSize="13" />
-                                <Switch Grid.Column="1" IsToggled="{Binding EnableWebTools}" />
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="10">
+                                <Label Text="Custom SearXNG URL" TextColor="{StaticResource Gray200}" FontSize="13" />
+                                <Entry Grid.Column="1"
+                                       Text="{Binding CustomSearchUrl}"
+                                       Placeholder="https://searx.be"
+                                       PlaceholderColor="{StaticResource Gray500}"
+                                       Keyboard="Url"
+                                       TextColor="White"
+                                       MinimumWidthRequest="120"
+                                       HorizontalTextAlignment="End"
+                                       FontSize="12"
+                                       ClearButtonVisibility="WhileEditing" />
+                                <Label Grid.Row="1" Grid.ColumnSpan="2"
+                                       Text="Kosongkan untuk memakai instance publik bawaan"
+                                       TextColor="{StaticResource Gray500}" FontSize="11" />
                             </Grid>
                         </Border>
 
@@ -451,15 +465,24 @@
                             </Grid>
                         </Border>
 
-                        <Label Text="Thinking" Style="{StaticResource SettingsSectionHeaderStyle}" />
-                        <Border Style="{StaticResource SettingsSectionCardStyle}">
-                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="12">
-                                <Label Text="Thinking mode" TextColor="{StaticResource Gray200}" FontSize="13" />
-                                <Switch Grid.Column="1" IsToggled="{Binding ThinkingEnabled}" />
-                                <Label Grid.Row="1" Text="Verbose (Plan + Answer)" TextColor="{StaticResource Gray400}" FontSize="13" />
-                                <Switch Grid.Row="1" Grid.Column="1" IsToggled="{Binding ThinkingVerbose}" />
-                            </Grid>
-                        </Border>
+                    <Label Text="Thinking" Style="{StaticResource SettingsSectionHeaderStyle}" />
+                    <Border Style="{StaticResource SettingsSectionCardStyle}">
+                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto" RowSpacing="12">
+                            <Label Text="Thinking depth" TextColor="{StaticResource Gray200}" FontSize="13" />
+                            <Picker Grid.Column="1"
+                                    SelectedIndex="{Binding ThinkingDepthIndex}"
+                                    Title="Depth"
+                                    TextColor="White"
+                                    HorizontalOptions="End"
+                                    MinimumWidthRequest="100">
+                                <Picker.Items>
+                                    <x:String>Quick</x:String>
+                                    <x:String>Auto</x:String>
+                                    <x:String>Deep</x:String>
+                                </Picker.Items>
+                            </Picker>
+                        </Grid>
+                    </Border>
 
                         <Label Text="Answers" Style="{StaticResource SettingsSectionHeaderStyle}" />
                         <Border Style="{StaticResource SettingsSectionCardStyle}">

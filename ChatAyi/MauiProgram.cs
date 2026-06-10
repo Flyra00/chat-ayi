@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using ChatAyi.Services;
+using ChatAyi.Services.Documents;
 using ChatAyi.Services.Search;
 using System.Net;
 using System.Net.Http;
@@ -73,10 +74,13 @@ public static class MauiProgram
                 Timeout = TimeSpan.FromSeconds(20)
             };
 
-            var baseUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
+            var envUrl = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_BASE_URL");
+            // Allow Preferences override (set via Settings UI) to take precedence over env var
+            var prefUrl = Preferences.Get("ChatAyi.SearXngUrl", string.Empty)?.Trim();
+            var baseUrl = !string.IsNullOrWhiteSpace(prefUrl) ? prefUrl : envUrl;
             var fallbackRaw = Environment.GetEnvironmentVariable("CHATAYI_SEARXNG_FALLBACK_INSTANCES");
             var fallbackInstances = SearxngSearchClient.ParseFallbackInstancesEnvVar(fallbackRaw);
-            return new SearxngSearchClient(http, baseUrl, fallbackInstances, TimeSpan.FromSeconds(8));
+            return new SearxngSearchClient(http, baseUrl, fallbackInstances, TimeSpan.FromSeconds(4));
         });
 
         builder.Services.AddSingleton<SearchIntentClassifier>();
@@ -129,6 +133,10 @@ public static class MauiProgram
         builder.Services.AddSingleton<PersonaProfileStore>();
         builder.Services.AddSingleton<PromptContextAssembler>();
         builder.Services.AddSingleton<AuthStore>();
+
+        // Document reading services
+        builder.Services.AddSingleton<DocumentReaderService>();
+        builder.Services.AddSingleton<DocumentChunker>();
 
         return builder.Build();
     }

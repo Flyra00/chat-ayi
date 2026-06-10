@@ -103,15 +103,28 @@
                                 Stroke="{StaticResource ChatStrokeBrush}"
                                 StrokeThickness="1"
                                 StrokeShape="RoundRectangle 12"
-                                Padding="14,0">
-                            <Entry x:Name="PasswordEntry"
-                                   Placeholder="Minimal 6 karakter"
-                                   PlaceholderColor="{StaticResource Gray500}"
-                                   TextColor="White"
-                                   FontSize="14"
-                                   FontFamily="OpenSansRegular"
-                                   IsPassword="True"
-                                   BackgroundColor="Transparent" />
+                                Padding="14,0,4,0">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Entry x:Name="PasswordEntry"
+                                       Placeholder="Minimal 6 karakter"
+                                       PlaceholderColor="{StaticResource Gray500}"
+                                       TextColor="White"
+                                       FontSize="14"
+                                       FontFamily="OpenSansRegular"
+                                       IsPassword="True"
+                                       BackgroundColor="Transparent" />
+                                <Button Grid.Column="1"
+                                        x:Name="PasswordToggle"
+                                        Text="Show"
+                                        FontSize="11"
+                                        FontFamily="OpenSansSemibold"
+                                        TextColor="{StaticResource Gray400}"
+                                        BackgroundColor="Transparent"
+                                        Padding="8,0"
+                                        HeightRequest="40"
+                                        WidthRequest="54"
+                                        Clicked="OnTogglePasswordVisibility" />
+                            </Grid>
                         </Border>
                     </VerticalStackLayout>
 
@@ -125,15 +138,28 @@
                                 Stroke="{StaticResource ChatStrokeBrush}"
                                 StrokeThickness="1"
                                 StrokeShape="RoundRectangle 12"
-                                Padding="14,0">
-                            <Entry x:Name="ConfirmPasswordEntry"
-                                   Placeholder="Ketik ulang password"
-                                   PlaceholderColor="{StaticResource Gray500}"
-                                   TextColor="White"
-                                   FontSize="14"
-                                   FontFamily="OpenSansRegular"
-                                   IsPassword="True"
-                                   BackgroundColor="Transparent" />
+                                Padding="14,0,4,0">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <Entry x:Name="ConfirmPasswordEntry"
+                                       Placeholder="Ketik ulang password"
+                                       PlaceholderColor="{StaticResource Gray500}"
+                                       TextColor="White"
+                                       FontSize="14"
+                                       FontFamily="OpenSansRegular"
+                                       IsPassword="True"
+                                       BackgroundColor="Transparent" />
+                                <Button Grid.Column="1"
+                                        x:Name="ConfirmPasswordToggle"
+                                        Text="Show"
+                                        FontSize="11"
+                                        FontFamily="OpenSansSemibold"
+                                        TextColor="{StaticResource Gray400}"
+                                        BackgroundColor="Transparent"
+                                        Padding="8,0"
+                                        HeightRequest="40"
+                                        WidthRequest="54"
+                                        Clicked="OnToggleConfirmPasswordVisibility" />
+                            </Grid>
                         </Border>
                     </VerticalStackLayout>
 

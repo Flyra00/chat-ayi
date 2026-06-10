@@ -126,4 +126,10 @@ public partial class LoginPage : ContentPage, IQueryAttributable
         ErrorLabel.Text = message;
         ErrorLabel.IsVisible = true;
     }
+
+    private void OnTogglePasswordVisibility(object sender, EventArgs e)
+    {
+        PasswordEntry.IsPassword = !PasswordEntry.IsPassword;
+        PasswordToggle.Text = PasswordEntry.IsPassword ? "Show" : "Hide";
+    }
 }

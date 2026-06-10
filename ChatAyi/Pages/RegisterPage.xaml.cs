@@ -97,4 +97,16 @@ public partial class RegisterPage : ContentPage
         ErrorLabel.Text = message;
         ErrorLabel.IsVisible = true;
     }
+
+    private void OnTogglePasswordVisibility(object sender, EventArgs e)
+    {
+        PasswordEntry.IsPassword = !PasswordEntry.IsPassword;
+        PasswordToggle.Text = PasswordEntry.IsPassword ? "Show" : "Hide";
+    }
+
+    private void OnToggleConfirmPasswordVisibility(object sender, EventArgs e)
+    {
+        ConfirmPasswordEntry.IsPassword = !ConfirmPasswordEntry.IsPassword;
+        ConfirmPasswordToggle.Text = ConfirmPasswordEntry.IsPassword ? "Show" : "Hide";
+    }
 }

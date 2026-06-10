@@ -1,0 +1,30 @@
+use_default_settings: true
+
+general:
+  instance_name: ChatAyi SearXNG
+
+server:
+  secret_key: CHANGEME_SEARXNG_SECRET_KEY_1234567890
+  limiter: false
+  image_proxy: true
+  bind_address: "0.0.0.0"
+  method: GET
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Download-Options: noopen
+    X-Robots-Tag: noindex, nofollow
+    Referrer-Policy: no-referrer
+  cors:
+    origins:
+      - "*"
+
+search:
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+  default_locale: id
+  query_in_title: true

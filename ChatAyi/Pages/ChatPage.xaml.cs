@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using ChatAyi.Models;
 using ChatAyi.Services;
+using ChatAyi.Services.Documents;
 using ChatAyi.Services.Search;
 using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Networking;
@@ -25,7 +26,8 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private const string OfflineFallbackKey = "ChatAyi.OfflineFallback";
     private const string OfflineQueueKey = "ChatAyi.OfflineQueue";
     private const string EnableDcpKey = "ChatAyi.EnableDcp";
-
+    private const string SearXngUrlKey = "ChatAyi.SearXngUrl";
+    
     private readonly ChatApiClient _api;
     private readonly SearchOrchestrator _searchOrchestrator;
     private readonly SearchGroundingComposer _searchGroundingComposer;
@@ -37,6 +39,12 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     private readonly PersonaProfileStore _personaProfileStore;
     private readonly PromptContextAssembler _promptContextAssembler;
     private readonly AuthStore _auth;
+    private readonly SearxngSearchClient _searxng;
+    private string _customSearchUrl = string.Empty;
+    private readonly DocumentReaderService _documentReader;
+    private readonly DocumentChunker _documentChunker;
+    private readonly Dictionary<string, DocumentContext> _sessionDocuments = new();
+    private DocumentContext _currentDocument;
     private CancellationTokenSource _cts;
     private bool _isSending;
     private string _inputText = string.Empty;
@@ -68,7 +76,8 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         string Model,
         bool EnableThinking,
         IEnumerable<object> RequestMessages,
-        ChatMessage Assistant);
+        ChatMessage Assistant,
+        int SendVersion);
 
     private readonly Queue<PendingSend> _offlineQueue = new();
     private readonly SemaphoreSlim _offlineQueueGate = new(1, 1);
@@ -311,7 +320,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     {
         get
         {
-            if (CurrentProvider != ChatApiClient.Provider.NvidiaIntegrate)
+            if (CurrentProvider is not (ChatApiClient.Provider.NvidiaIntegrate))
                 return "-";
 
             if (string.IsNullOrWhiteSpace(CurrentModel))
@@ -334,7 +343,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     {
         get
         {
-            if (CurrentProvider != ChatApiClient.Provider.NvidiaIntegrate)
+            if (CurrentProvider is not (ChatApiClient.Provider.NvidiaIntegrate))
                 return Colors.LightGray;
 
             if (string.IsNullOrWhiteSpace(CurrentModel))
@@ -438,6 +447,22 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         }
     }
 
+    public string CustomSearchUrl
+    {
+        get => _customSearchUrl;
+        set
+        {
+            value = (value ?? string.Empty).Trim();
+            if (string.Equals(_customSearchUrl, value, StringComparison.Ordinal)) return;
+            _customSearchUrl = value;
+            Preferences.Set(SearXngUrlKey, value);
+            // Update the SearXNG client at runtime
+            if (!string.IsNullOrWhiteSpace(value) && _searxng is not null)
+                _searxng.SetCustomBaseUrl(value);
+            OnPropertyChanged();
+        }
+    }
+
     public bool IsOffline
         => Connectivity.Current.NetworkAccess != NetworkAccess.Internet;
 
@@ -517,10 +542,19 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
     public bool HasActiveComposerTool => !string.Equals(_activeComposerTool, "none", StringComparison.Ordinal);
 
+    // ── Document state ──
+
+    public bool HasDocumentAttached => _currentDocument != null;
+
+    public string DocumentFileInfo => _currentDocument != null
+        ? $"📄 {_currentDocument.FileName} ({_currentDocument.TotalChars} chars, {_currentDocument.Chunks.Count} chunks)"
+        : string.Empty;
+
     public string ActiveComposerToolLabel => _activeComposerTool switch
     {
         "search" => "🌐 Web search",
         "browse" => "🔗 Browse URL",
+        "thinking" => "🧠 Thinking",
         "memory_add" => "💾 Save memory",
         _ => string.Empty
     };
@@ -529,6 +563,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
     {
         "search" => "Cari apa di web?",
         "browse" => "Tempel URL atau URL + pertanyaan...",
+        "thinking" => "Tanya apa? URL juga boleh ditempel...",
         "memory_add" => "Apa yang ingin disimpan?",
         _ => "Type a message..."
     };
@@ -581,34 +616,35 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         }
     }
 
+    // Legacy — kept for backward compat. "enabled" = auto or deep, "disabled" = quick.
     public bool ThinkingEnabled
     {
-        get => _thinkingMode != "off";
+        get => !string.Equals(_thinkingMode, "quick", StringComparison.Ordinal);
         set
         {
-            var desired = value ? (_thinkingMode == "off" ? "on" : _thinkingMode) : "off";
+            var desired = value ? (_thinkingMode == "quick" ? "auto" : _thinkingMode) : "quick";
             if (string.Equals(_thinkingMode, desired, StringComparison.Ordinal)) return;
             _thinkingMode = desired;
             Preferences.Set(ThinkingModeKey, _thinkingMode);
             OnPropertyChanged();
-            OnPropertyChanged(nameof(ThinkingVerbose));
+            OnPropertyChanged(nameof(ThinkingDepthIndex));
         }
     }
 
+    // Deprecated — kept for backward compat. Always returns true for "deep", false otherwise.
     public bool ThinkingVerbose
     {
-        get => string.Equals(_thinkingMode, "verbose", StringComparison.Ordinal);
+        get => string.Equals(_thinkingMode, "deep", StringComparison.Ordinal);
         set
         {
-            if (!ThinkingEnabled && value)
-                ThinkingEnabled = true;
-
-            var desired = value ? "verbose" : (ThinkingEnabled ? "on" : "off");
+            // Legacy setter — map true → deep, false → auto
+            var desired = value ? "deep" : "auto";
             if (string.Equals(_thinkingMode, desired, StringComparison.Ordinal)) return;
             _thinkingMode = desired;
             Preferences.Set(ThinkingModeKey, _thinkingMode);
             OnPropertyChanged();
             OnPropertyChanged(nameof(ThinkingEnabled));
+            OnPropertyChanged(nameof(ThinkingDepthIndex));
         }
     }
 
@@ -631,6 +667,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     new HttpClient { BaseAddress = new Uri("https://api.inceptionlabs.ai"), Timeout = TimeSpan.FromMinutes(10) });
         _browse = services?.GetService<BrowseClient>()
                   ?? new BrowseClient(new HttpClient { Timeout = TimeSpan.FromSeconds(25) });
+        _searxng = services?.GetService<SearxngSearchClient>();
         _searchOrchestrator = services?.GetService<SearchOrchestrator>()
                               ?? CreateSearchOrchestratorFallback(_browse);
         _searchGroundingComposer = services?.GetService<SearchGroundingComposer>()
@@ -642,6 +679,8 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         _personaProfileStore = services?.GetService<PersonaProfileStore>() ?? new PersonaProfileStore();
         _promptContextAssembler = services?.GetService<PromptContextAssembler>() ?? new PromptContextAssembler();
         _auth = services?.GetService<AuthStore>() ?? new AuthStore();
+        _documentReader = services?.GetService<DocumentReaderService>() ?? new DocumentReaderService();
+        _documentChunker = services?.GetService<DocumentChunker>() ?? new DocumentChunker();
 
         CopyMessageCommand = new Command<object>(async (param) => await CopyMessageAsync(param));
         ToggleSettingsCommand = new Command(() => IsSettingsOpen = !IsSettingsOpen);
@@ -852,48 +891,23 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                     assistant.IsEphemeral = true;
                 });
 
-                var pending = new StringBuilder();
-                var captured = new StringBuilder();
-                var sw = Stopwatch.StartNew();
-                var lastFlushMs = 0L;
-                const int FlushIntervalMs = 60;
-
                 try
                 {
-                    await foreach (var delta in _api
-                                       .StreamChatAsync(item.Provider, item.RequestMessages, item.Model, enableThinking: item.EnableThinking, _cts.Token)
-                                       .WithCancellation(_cts.Token)
-                                       .ConfigureAwait(false))
+                    var capturedText = await StreamAssistantResponseAsync(
+                        item.Provider,
+                        item.RequestMessages,
+                        item.Model,
+                        item.EnableThinking,
+                        assistant,
+                        item.SessionId,
+                        item.SendVersion,
+                        flushIntervalMs: 60,
+                        allowUiUpdate: true,
+                        _cts.Token);
+
+                    if (!string.IsNullOrWhiteSpace(capturedText))
                     {
-                        if (string.IsNullOrEmpty(delta)) continue;
-
-                        pending.Append(delta);
-                        captured.Append(delta);
-                        var now = sw.ElapsedMilliseconds;
-                        if (now - lastFlushMs < FlushIntervalMs) continue;
-
-                        var chunk = pending.ToString();
-                        pending.Clear();
-                        lastFlushMs = now;
-
-                        MainThread.BeginInvokeOnMainThread(() =>
-                        {
-                            assistant.Content += chunk;
-                        });
-                    }
-
-                    if (pending.Length > 0)
-                    {
-                        var chunk = pending.ToString();
-                        MainThread.BeginInvokeOnMainThread(() =>
-                        {
-                            assistant.Content += chunk;
-                        });
-                    }
-
-                    if (captured.Length > 0)
-                    {
-                        await AppendSessionRecordAsync(item.SessionId, "assistant", captured.ToString(), item.Model, string.Empty, _cts.Token);
+                        await AppendSessionRecordAsync(item.SessionId, "assistant", capturedText, item.Model, string.Empty, _cts.Token);
                     }
 
                     await MainThread.InvokeOnMainThreadAsync(() => assistant.IsEphemeral = false);
@@ -1001,6 +1015,80 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         ActiveComposerTool = "none";
     }
 
+    private void OnClearDocumentClicked(object sender, EventArgs e)
+    {
+        var sessionId = SelectedSession?.SessionId;
+        if (!string.IsNullOrWhiteSpace(sessionId))
+            _sessionDocuments.Remove(sessionId);
+        _currentDocument = null;
+        OnPropertyChanged(nameof(HasDocumentAttached));
+        OnPropertyChanged(nameof(DocumentFileInfo));
+    }
+
+    private async Task PickAndAttachDocumentAsync()
+    {
+        try
+        {
+            var customFileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+            {
+                { DevicePlatform.WinUI, new[] { ".txt", ".md", ".docx", ".pdf" } },
+            });
+
+            var result = await FilePicker.PickAsync(new PickOptions
+            {
+                PickerTitle = "Pilih dokumen (.txt, .md, .docx, .pdf)",
+                FileTypes = customFileTypes
+            });
+
+            if (result is null) return;
+
+            var filePath = result.FullPath;
+            if (string.IsNullOrWhiteSpace(filePath)) return;
+
+            var ext = Path.GetExtension(filePath);
+            if (!_documentReader.IsExtensionAllowed(ext))
+            {
+                await DisplayAlert("Format tidak didukung",
+                    "Hanya .txt, .md, .docx, dan .pdf (text-based) yang didukung.", "OK");
+                return;
+            }
+
+            var readResult = await _documentReader.ReadAsync(filePath);
+            if (readResult is null)
+            {
+                await DisplayAlert("Gagal membaca",
+                    "Dokumen tidak bisa dibaca. Pastikan file tidak corrupt, tidak terlalu besar (maks 15 MB), dan format didukung.",
+                    "OK");
+                return;
+            }
+
+            var chunks = _documentChunker.ChunkText(readResult.FullText, result.FileName);
+            var sessionId = await GetOrCreateActiveSessionIdAsync(CancellationToken.None);
+
+            var ctx = new DocumentContext
+            {
+                FileName = readResult.FileName,
+                FullText = readResult.FullText,
+                Chunks = chunks,
+                Format = readResult.Format,
+                TotalChars = readResult.TotalChars,
+                AttachedAt = DateTime.UtcNow
+            };
+
+            _sessionDocuments[sessionId] = ctx;
+            _currentDocument = ctx;
+
+            OnPropertyChanged(nameof(HasDocumentAttached));
+            OnPropertyChanged(nameof(DocumentFileInfo));
+
+            Debug.WriteLine($"[Document] attached session={sessionId} file={readResult.FileName} chars={readResult.TotalChars} chunks={chunks.Count}");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Document] pick/attach error: {ex.Message}");
+        }
+    }
+
     private void OnMoreMenuClicked(object sender, EventArgs e)
     {
         IsMoreMenuOpen = !IsMoreMenuOpen;
@@ -1035,8 +1123,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             case "browse":
                 ActiveComposerTool = "browse";
                 return;
+            case "thinking":
+                ActiveComposerTool = "thinking";
+                return;
             case "memory_add":
                 ActiveComposerTool = "memory_add";
+                return;
+            case "document":
+                _ = PickAndAttachDocumentAsync();
                 return;
 
             // Direct-execute commands
@@ -1046,14 +1140,11 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             case "retry":
                 await SubmitInternalCommandAsync("/retry", "↻ Retry queued");
                 return;
-            case "thinking_off":
-                await SubmitInternalCommandAsync("/thinking off", "🧠 Thinking: off");
-                return;
             case "thinking_on":
-                await SubmitInternalCommandAsync("/thinking on", "🧠 Thinking: on");
-                return;
+            case "thinking_off":
             case "thinking_verbose":
-                await SubmitInternalCommandAsync("/thinking verbose", "🧠 Thinking: verbose");
+                // Legacy toggle — redirect to explanatory message
+                await SubmitInternalCommandAsync("/thinking legacy", "🧠 Thinking");
                 return;
             case "memory_on":
                 await SubmitInternalCommandAsync("/memory on", "💾 Memory: on");
@@ -1079,6 +1170,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         {
             "search" => "/search " + raw,
             "browse" => "/browse " + raw,
+            "thinking" => "/think " + raw,
             "memory_add" => "/memory add preference " + raw,
             _ => raw
         };
@@ -1091,6 +1183,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         {
             "search" => "🌐 Web search\n" + raw,
             "browse" => "🔗 Browse URL\n" + raw,
+            "thinking" => "🧠 Thinking\n" + raw,
             "memory_add" => "💾 Save memory\n" + raw,
             _ => raw
         };
@@ -1241,7 +1334,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             if (_checkedKey) return;
             _checkedKey = true;
 
-            _thinkingMode = NormalizeThinkingMode(Preferences.Get(ThinkingModeKey, "off"));
+            _thinkingMode = NormalizeThinkingMode(Preferences.Get(ThinkingModeKey, "auto"));
             var provider = (Preferences.Get(ProviderKey, "cerebras") ?? "cerebras").Trim().ToLowerInvariant();
             _providerIndex = provider switch
             {
@@ -1265,12 +1358,17 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             _enableOfflineFallback = Preferences.Get(OfflineFallbackKey, true);
             _queueWhileOffline = Preferences.Get(OfflineQueueKey, true);
             _enableDcp = Preferences.Get(EnableDcpKey, true);
+            _customSearchUrl = (Preferences.Get(SearXngUrlKey, string.Empty) ?? string.Empty).Trim();
+
+            // Apply custom SearXNG URL from Preferences on startup
+            if (!string.IsNullOrWhiteSpace(_customSearchUrl) && _searxng is not null)
+                _searxng.SetCustomBaseUrl(_customSearchUrl);
 
             OnPropertyChanged(nameof(EnableWebTools));
             OnPropertyChanged(nameof(EnableRemember));
             OnPropertyChanged(nameof(ShowCommandTips));
             OnPropertyChanged(nameof(ThinkingEnabled));
-            OnPropertyChanged(nameof(ThinkingVerbose));
+            OnPropertyChanged(nameof(ThinkingDepthIndex));
             OnPropertyChanged(nameof(StructuredAnswers));
             OnPropertyChanged(nameof(ProviderIndex));
             OnPropertyChanged(nameof(ProviderSubtitle));
@@ -1281,6 +1379,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             OnPropertyChanged(nameof(QueueWhileOffline));
             OnPropertyChanged(nameof(EnableDcp));
             OnPropertyChanged(nameof(DcpSummaryText));
+            OnPropertyChanged(nameof(CustomSearchUrl));
             OnPropertyChanged(nameof(DisplayName));
             OnPropertyChanged(nameof(DisplayEmail));
             NotifyOfflineUi();
@@ -1325,10 +1424,41 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         var v = (raw ?? string.Empty).Trim().ToLowerInvariant();
         return v switch
         {
-            "on" or "true" or "1" or "basic" => "on",
-            "verbose" => "verbose",
-            _ => "off"
+            // New depth values
+            "quick" or "auto" or "deep" => v,
+            // Legacy mapping
+            "off" or "false" or "0" => "quick",
+            "on" or "true" or "1" or "basic" => "auto",
+            "verbose" => "deep",
+            _ => "auto"
         };
+    }
+
+    /// <summary>
+    /// Maps thinking depth to 0=Quick, 1=Auto, 2=Deep for Picker binding.
+    /// </summary>
+    public int ThinkingDepthIndex
+    {
+        get => _thinkingMode switch
+        {
+            "quick" => 0,
+            "deep" => 2,
+            _ => 1 // auto
+        };
+        set
+        {
+            var desired = value switch
+            {
+                0 => "quick",
+                2 => "deep",
+                _ => "auto"
+            };
+            if (string.Equals(_thinkingMode, desired, StringComparison.Ordinal)) return;
+            _thinkingMode = desired;
+            Preferences.Set(ThinkingModeKey, _thinkingMode);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ThinkingEnabled));
+        }
     }
 
     private string GetThinkingInstruction()
@@ -2003,6 +2133,15 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             await HydrateMessagesAsync(sessionId, ct);
             await RefreshSessionSelectorAsync(ct, sessionId);
 
+            // Restore document context for this session
+            if (_sessionDocuments.TryGetValue(sessionId, out var sessionDoc))
+            {
+                _currentDocument = sessionDoc;
+                OnPropertyChanged(nameof(HasDocumentAttached));
+                OnPropertyChanged(nameof(DocumentFileInfo));
+                Debug.WriteLine($"[Document] restored for session={sessionId} file={sessionDoc.FileName}");
+            }
+
             _sessionInitialized = true;
             Debug.WriteLine($"[SessionFlow] switch-complete active={sessionId} messages={Messages.Count}");
         }
@@ -2074,6 +2213,10 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         {
             _offlineQueue.Clear();
         }
+
+        _currentDocument = null;
+        OnPropertyChanged(nameof(HasDocumentAttached));
+        OnPropertyChanged(nameof(DocumentFileInfo));
 
         OnPropertyChanged(nameof(IsSending));
         OnPropertyChanged(nameof(CanSend));
@@ -2297,6 +2440,112 @@ public partial class ChatPage : ContentPage, IQueryAttributable
         }
     }
 
+    // ── Streaming Helper ──────────────────────────────────────────────
+    // Extracted from 4 duplicate branches (normal chat, /search, /browse,
+    // offline queue). All UI updates are deterministic via
+    // InvokeOnMainThreadAsync — no fire-and-forget BeginInvoke races.
+    //
+    // Returns the captured response text.
+    // Throws on error — caller handles exceptions.
+    // ───────────────────────────────────────────────────────────────────
+
+    private async Task<string> StreamAssistantResponseAsync(
+        ChatApiClient.Provider provider,
+        IEnumerable<object> requestMessages,
+        string model,
+        bool enableThinking,
+        ChatMessage assistant,
+        string sessionId,
+        int sendVersion,
+        int flushIntervalMs,
+        bool allowUiUpdate,
+        CancellationToken ct)
+    {
+        var pending = new StringBuilder();
+        var captured = new StringBuilder();
+        var sw = Stopwatch.StartNew();
+        var lastFlushMs = 0L;
+
+        async Task FlushPendingAsync()
+        {
+            if (pending.Length == 0) return;
+
+            var chunk = pending.ToString();
+            pending.Clear();
+
+            if (!allowUiUpdate) return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (sendVersion != _sendVersion) return;
+                if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
+                assistant.Content += chunk;
+            });
+        }
+
+        // Streaming timeout: prevents the app from hanging forever if the LLM provider
+        // is slow or unresponsive. 90s covers TTFT (time-to-first-token) + full streaming
+        // of up to ~4096 tokens even on slow models.
+        using var streamTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        streamTimeoutCts.CancelAfter(TimeSpan.FromSeconds(90));
+        var streamCt = streamTimeoutCts.Token;
+
+        try
+        {
+            await foreach (var delta in _api
+                .StreamChatAsync(provider, requestMessages, model, enableThinking, streamCt)
+                .WithCancellation(streamCt)
+                .ConfigureAwait(false))
+            {
+                if (string.IsNullOrEmpty(delta)) continue;
+
+                pending.Append(delta);
+                captured.Append(delta);
+
+                var now = sw.ElapsedMilliseconds;
+                if (now - lastFlushMs < flushIntervalMs) continue;
+
+                lastFlushMs = now;
+                await FlushPendingAsync();
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Streaming timed out (not user cancellation). Flush partial content so
+            // the caller can either use it or show a timeout error.
+            Debug.WriteLine($"[Stream] TIMEOUT after {sw.ElapsedMilliseconds}ms (captured={captured.Length} chars)");
+            await FlushPendingAsync();
+            return captured.ToString();
+        }
+
+        await FlushPendingAsync();
+        lastFlushMs = sw.ElapsedMilliseconds;
+
+        return captured.ToString();
+    }
+
+    // ── UI Thread Final Assignment Helper ─────────────────────────────
+    // Sets assistant.Content on the UI thread with stale guards.
+    // Used by /search and /browse for final validated/cleaned output.
+    // ───────────────────────────────────────────────────────────────────
+
+    private async Task SetAssistantContentOnUiThreadAsync(
+        ChatMessage assistant,
+        string content,
+        string sessionId,
+        int sendVersion,
+        bool allowUiUpdate = true)
+    {
+        if (!allowUiUpdate) return;
+
+        await MainThread.InvokeOnMainThreadAsync(() =>
+        {
+            if (sendVersion != _sendVersion) return;
+            if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
+            assistant.Content = content;
+        });
+    }
+
     private static string BuildSessionTitle(string text)
     {
         var cleaned = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
@@ -2381,19 +2630,35 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             return false;
 
         var rest = prompt.Length > 9 ? prompt.Substring(9).Trim() : string.Empty;
-        if (string.IsNullOrWhiteSpace(rest) || rest.Equals("status", StringComparison.OrdinalIgnoreCase))
+
+        // Legacy toggle — explain the new mode
+        if (string.IsNullOrWhiteSpace(rest)
+            || string.Equals(rest, "legacy", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(rest, "status", StringComparison.OrdinalIgnoreCase))
         {
-            assistant.Content = $"Thinking mode: {_thinkingMode}\nUsage: /thinking on | /thinking off | /thinking verbose";
+            assistant.Content = "Thinking sekarang jadi mode riset terpadu. Pilih + > Thinking, atau pakai /think <pertanyaan>.\n" +
+                                "Search dan Browse dipilih otomatis berdasarkan pertanyaan lu.\n\n" +
+                                "Depth: quick = jawab cepat, auto = seimbang, deep = analisis mendalam.\n" +
+                                "Setting depth ada di Settings > Thinking depth.";
             return true;
         }
 
+        // Map legacy args to depth
         var arg = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries)[0].Trim().ToLowerInvariant();
-        _thinkingMode = NormalizeThinkingMode(arg);
+        var mapped = arg switch
+        {
+            "on" => "auto",
+            "off" => "quick",
+            "verbose" => "deep",
+            _ => arg
+        };
+        _thinkingMode = NormalizeThinkingMode(mapped);
         Preferences.Set(ThinkingModeKey, _thinkingMode);
         OnPropertyChanged(nameof(ThinkingEnabled));
-        OnPropertyChanged(nameof(ThinkingVerbose));
+        OnPropertyChanged(nameof(ThinkingDepthIndex));
 
-        assistant.Content = $"Thinking mode set to: {_thinkingMode}";
+        assistant.Content = $"Thinking depth set to: {mapped}. " +
+                            "Coba /think <pertanyaan> atau pilih + > Thinking untuk riset dengan web.";
         return true;
     }
 
@@ -2938,6 +3203,14 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
             }
 
+            if (prompt.StartsWith("/think", StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.WriteLine("[Routing] branch=thinking");
+                var handled = await TryHandleThinkingModeAsync(
+                    prompt, displayPrompt, assistant, sessionId, provider, model, sendVersion, _cts.Token);
+                if (handled) return;
+            }
+
             if (TryParseSearchCommand(prompt, out var searchQuery))
             {
                 Debug.WriteLine("[Routing] branch=search");
@@ -3068,70 +3341,28 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 assistant.Content = string.Empty;
 
-                var searchPending = new StringBuilder();
-                var searchCaptured = new StringBuilder();
-                var searchSw = Stopwatch.StartNew();
-                var searchLastFlushMs = 0L;
-                const int SearchFlushIntervalMs = 140;
-                var searchFinalContentSet = false;
+                var searchCaptured = await StreamAssistantResponseAsync(
+                    provider,
+                    searchRequestMessages,
+                    searchModel,
+                    ThinkingEnabled,
+                    assistant,
+                    sessionId,
+                    sendVersion,
+                    flushIntervalMs: 140,
+                    allowUiUpdate: true,
+                    _cts.Token);
 
-                await foreach (var delta in _api
-                                   .StreamChatAsync(provider, searchRequestMessages, searchModel, enableThinking: ThinkingEnabled, _cts.Token)
-                                   .WithCancellation(_cts.Token)
-                                   .ConfigureAwait(false))
+                if (!string.IsNullOrWhiteSpace(searchCaptured))
                 {
-                    if (string.IsNullOrEmpty(delta)) continue;
-
-                    searchPending.Append(delta);
-                    searchCaptured.Append(delta);
-                    var now = searchSw.ElapsedMilliseconds;
-                    if (now - searchLastFlushMs < SearchFlushIntervalMs) continue;
-
-                    var chunk = searchPending.ToString();
-                    searchPending.Clear();
-                    searchLastFlushMs = now;
-
-                    MainThread.BeginInvokeOnMainThread(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        if (searchFinalContentSet) return;
-                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
-                        assistant.Content += chunk;
-                    });
-                }
-
-                // Flush remaining pending chunk on UI thread before final replacement
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    if (sendVersion != _sendVersion) return;
-                    if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
-
-                    if (searchPending.Length > 0)
-                    {
-                        assistant.Content += searchPending.ToString();
-                    }
-                });
-
-                string validated = null;
-                if (searchCaptured.Length > 0)
-                {
-                    validated = ValidateAndCleanSearchOutput(searchCaptured.ToString(), results, browsedPages, grounding);
+                    var validated = ValidateAndCleanSearchOutput(searchCaptured, results, browsedPages, grounding);
                     if (unhealthy && !validated.Contains("terbatas", StringComparison.OrdinalIgnoreCase)
                                    && !validated.Contains("belum", StringComparison.OrdinalIgnoreCase))
                     {
                         validated = PrependNaturalEvidenceWarning(validated, grounding.Health, grounding.Diagnostics);
                     }
 
-                    // Set final validated output on UI thread + prevent stale streaming callbacks
-                    await MainThread.InvokeOnMainThreadAsync(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
-
-                        assistant.Content = validated;
-                        searchFinalContentSet = true;
-                    });
-
+                    await SetAssistantContentOnUiThreadAsync(assistant, validated, sessionId, sendVersion);
                     await AppendSessionRecordAsync(sessionId, "assistant", validated, searchModel, string.Empty, _cts.Token);
                 }
 
@@ -3215,65 +3446,23 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
                 assistant.Content = string.Empty;
 
-                var browsePending = new StringBuilder();
-                var browseCaptured = new StringBuilder();
-                var browseSw = Stopwatch.StartNew();
-                var browseLastFlushMs = 0L;
-                const int BrowseFlushIntervalMs = 140;
-                var browseFinalContentSet = false;
+                var browseCaptured = await StreamAssistantResponseAsync(
+                    provider,
+                    browseRequestMessages,
+                    browseModel,
+                    ThinkingEnabled,
+                    assistant,
+                    sessionId,
+                    sendVersion,
+                    flushIntervalMs: 140,
+                    allowUiUpdate: true,
+                    _cts.Token);
 
-                await foreach (var delta in _api
-                                   .StreamChatAsync(provider, browseRequestMessages, browseModel, enableThinking: ThinkingEnabled, _cts.Token)
-                                   .WithCancellation(_cts.Token)
-                                   .ConfigureAwait(false))
+                if (!string.IsNullOrWhiteSpace(browseCaptured))
                 {
-                    if (string.IsNullOrEmpty(delta)) continue;
+                    var strictBrowse = EnforceStrictBrowseTemplate(browseCaptured, page.Url);
 
-                    browsePending.Append(delta);
-                    browseCaptured.Append(delta);
-                    var now = browseSw.ElapsedMilliseconds;
-                    if (now - browseLastFlushMs < BrowseFlushIntervalMs) continue;
-
-                    var chunk = browsePending.ToString();
-                    browsePending.Clear();
-                    browseLastFlushMs = now;
-
-                    MainThread.BeginInvokeOnMainThread(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        if (browseFinalContentSet) return;
-                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
-                        assistant.Content += chunk;
-                    });
-                }
-
-                // Flush remaining pending chunk on UI thread before final replacement
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    if (sendVersion != _sendVersion) return;
-                    if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
-
-                    if (browsePending.Length > 0)
-                    {
-                        assistant.Content += browsePending.ToString();
-                    }
-                });
-
-                string strictBrowse = null;
-                if (browseCaptured.Length > 0)
-                {
-                    strictBrowse = EnforceStrictBrowseTemplate(browseCaptured.ToString(), page.Url);
-
-                    // Set final browse output on UI thread + prevent stale streaming callbacks
-                    await MainThread.InvokeOnMainThreadAsync(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        if (!string.Equals(SelectedSession?.SessionId, sessionId, StringComparison.Ordinal)) return;
-
-                        assistant.Content = strictBrowse;
-                        browseFinalContentSet = true;
-                    });
-
+                    await SetAssistantContentOnUiThreadAsync(assistant, strictBrowse, sessionId, sendVersion);
                     await AppendSessionRecordAsync(sessionId, "assistant", strictBrowse, browseModel, string.Empty, _cts.Token);
                 }
 
@@ -3295,14 +3484,22 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 }
             }
 
+            // Inject document context if a document is attached to this session
+            _sessionDocuments.TryGetValue(sessionId, out var docContext);
+            if (docContext != null) _currentDocument = docContext;
+            var docContextBlock = BuildDocumentContextBlock(sessionId, prompt);
+
             var chatThinking = GetThinkingInstruction();
-            var chatFormat = GetResponseFormatInstruction(hasSources: false);
+            var chatFormat = GetResponseFormatInstruction(hasSources: docContextBlock != null);
             var sessionSnapshot = await BuildSessionContextSnapshotForNormalChatAsync(sessionId, _cts.Token);
             var chatSafety = BuildSafetyAndBoundariesInstruction(
-                "Gunakan memory personal hanya jika relevan. Jika memory bentrok dengan pesan user terbaru, ikuti pesan user terbaru. Voice wajib gua/lu konsisten.",
+                docContextBlock != null
+                    ? "Gunakan konten dokumen dan memory personal jika relevan. Jika memory bentrok dengan pesan user terbaru, ikuti pesan user terbaru. Voice wajib gua/lu konsisten."
+                    : "Gunakan memory personal hanya jika relevan. Jika memory bentrok dengan pesan user terbaru, ikuti pesan user terbaru. Voice wajib gua/lu konsisten.",
                 chatThinking,
                 chatFormat,
-                GetUnifiedVoiceInstruction());
+                GetUnifiedVoiceInstruction(),
+                docContextBlock);
 
             var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
                 chatSafety,
@@ -3316,20 +3513,13 @@ public partial class ChatPage : ContentPage, IQueryAttributable
 
             await AppendSessionRecordAsync(sessionId, "user", displayPrompt, model, displayPrompt, _cts.Token);
 
-            // Throttle UI updates to avoid ANR/freezes on Android.
-            var pending = new StringBuilder();
-            var captured = new StringBuilder();
-            var sw = Stopwatch.StartNew();
-            var lastFlushMs = 0L;
-            const int FlushIntervalMs = 140;
-
             if (EnableOfflineFallback && IsOffline)
             {
                 if (QueueWhileOffline)
                 {
                     lock (_offlineQueue)
                     {
-                        _offlineQueue.Enqueue(new PendingSend(sessionId, prompt, provider, model, ThinkingEnabled, requestMessages, assistant));
+                        _offlineQueue.Enqueue(new PendingSend(sessionId, prompt, provider, model, ThinkingEnabled, requestMessages, assistant, _sendVersion));
                     }
 
                     assistant.Content = $"> Offline\n\nPesan kamu diantrikan. Queued: {OfflineQueueCount}.\n\nKetik `/retry` saat online atau tunggu otomatis.";
@@ -3344,30 +3534,20 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 return;
             }
 
+            string capturedText = null;
             try
             {
-                await foreach (var delta in _api
-                                   .StreamChatAsync(provider, requestMessages, model, enableThinking: ThinkingEnabled, _cts.Token)
-                                   .WithCancellation(_cts.Token)
-                                   .ConfigureAwait(false))
-                {
-                    if (string.IsNullOrEmpty(delta)) continue;
-
-                    pending.Append(delta);
-                    captured.Append(delta);
-                    var now = sw.ElapsedMilliseconds;
-                    if (now - lastFlushMs < FlushIntervalMs) continue;
-
-                    var chunk = pending.ToString();
-                    pending.Clear();
-                    lastFlushMs = now;
-
-                    MainThread.BeginInvokeOnMainThread(() =>
-                    {
-                        if (sendVersion != _sendVersion) return;
-                        assistant.Content += chunk;
-                    });
-                }
+                capturedText = await StreamAssistantResponseAsync(
+                    provider,
+                    requestMessages,
+                    model,
+                    ThinkingEnabled,
+                    assistant,
+                    sessionId,
+                    sendVersion,
+                    flushIntervalMs: 140,
+                    allowUiUpdate: true,
+                    _cts.Token);
             }
             catch (HttpRequestException ex)
             {
@@ -3399,7 +3579,7 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 {
                     lock (_offlineQueue)
                     {
-                        _offlineQueue.Enqueue(new PendingSend(sessionId, prompt, provider, model, ThinkingEnabled, requestMessages, assistant));
+                        _offlineQueue.Enqueue(new PendingSend(sessionId, prompt, provider, model, ThinkingEnabled, requestMessages, assistant, _sendVersion));
                     }
 
                     assistant.Content = $"> Network error\n\n{ex.Message}\n\nPesan diantrikan. Queued: {OfflineQueueCount}.";
@@ -3411,19 +3591,9 @@ public partial class ChatPage : ContentPage, IQueryAttributable
                 throw;
             }
 
-            if (pending.Length > 0)
+            if (!string.IsNullOrWhiteSpace(capturedText))
             {
-                var chunk = pending.ToString();
-                MainThread.BeginInvokeOnMainThread(() =>
-                {
-                    if (sendVersion != _sendVersion) return;
-                    assistant.Content += chunk;
-                });
-            }
-
-            if (captured.Length > 0)
-            {
-                await AppendSessionRecordAsync(sessionId, "assistant", captured.ToString(), model, string.Empty, _cts.Token);
+                await AppendSessionRecordAsync(sessionId, "assistant", capturedText, model, string.Empty, _cts.Token);
             }
 
             assistant.IsEphemeral = false;
@@ -3445,6 +3615,904 @@ public partial class ChatPage : ContentPage, IQueryAttributable
             OnPropertyChanged(nameof(IsSending));
             OnPropertyChanged(nameof(CanSend));
         }
+    }
+
+    // ── Thinking Mode ─────────────────────────────────────────────────
+    // Unified handler for /think. Replaces /search and /browse as the
+    // primary user-facing tool. /search and /browse still work via
+    // backward compatibility.
+    // ──────────────────────────────────────────────────────────────────
+
+    private enum ThinkingToolDecision
+    {
+        None,          // No web needed — normal reasoning
+        Search,        // Web search required
+        Browse,        // Read a URL
+        Document,      // Query related to attached document
+        SearchThenBrowse // Future: search + browse top sources
+    }
+
+    private sealed record ThinkingRequest(
+        string UserPrompt,
+        string Mode,            // "quick" | "auto" | "deep"
+        ThinkingToolDecision Decision,
+        string Url,             // Non-empty only if Decision == Browse
+        string Query);          // Search query or browse question
+
+    /// <summary>
+    /// Parses "/think [--quick|--auto|--deep|--search|--browse] &lt;prompt&gt;"
+    /// </summary>
+    private static bool TryParseThinkCommand(string input, out string prompt, out string forcedMode)
+    {
+        prompt = string.Empty;
+        forcedMode = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(input)) return false;
+        var text = input.Trim();
+        if (!text.StartsWith("/think", StringComparison.OrdinalIgnoreCase)) return false;
+
+        // "/think" is exactly 6 chars
+        var rest = text.Length > 6 ? text.Substring(6).Trim() : string.Empty;
+        if (string.IsNullOrWhiteSpace(rest)) return false;
+
+        // Check for flags
+        const StringComparison ic = StringComparison.OrdinalIgnoreCase;
+        if (rest.StartsWith("--quick ", ic) || string.Equals(rest, "--quick", ic))
+        {
+            forcedMode = "quick";
+            prompt = rest.Length > 8 ? rest.Substring(8).Trim() : string.Empty;
+        }
+        else if (rest.StartsWith("--auto ", ic) || string.Equals(rest, "--auto", ic))
+        {
+            forcedMode = "auto";
+            prompt = rest.Length > 7 ? rest.Substring(7).Trim() : string.Empty;
+        }
+        else if (rest.StartsWith("--deep ", ic) || string.Equals(rest, "--deep", ic))
+        {
+            forcedMode = "deep";
+            prompt = rest.Length > 7 ? rest.Substring(7).Trim() : string.Empty;
+        }
+        else if (rest.StartsWith("--search ", ic) || string.Equals(rest, "--search", ic))
+        {
+            forcedMode = "search";
+            prompt = rest.Length > 9 ? rest.Substring(9).Trim() : string.Empty;
+        }
+        else if (rest.StartsWith("--browse ", ic) || string.Equals(rest, "--browse", ic))
+        {
+            forcedMode = "browse";
+            prompt = rest.Length > 9 ? rest.Substring(9).Trim() : string.Empty;
+        }
+        else
+        {
+            // No flag — entire rest is the prompt
+            prompt = rest;
+            forcedMode = string.Empty;
+        }
+
+        return !string.IsNullOrWhiteSpace(prompt);
+    }
+
+    /// <summary>
+    /// Extracts the first URL from text. Cleans trailing punctuation.
+    /// </summary>
+    private static bool TryExtractFirstUrl(string text, out string url, out string remainingText)
+    {
+        url = string.Empty;
+        remainingText = text ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        // Simple URL detection: find http:// or https://
+        const string httpPrefix = "http://";
+        const string httpsPrefix = "https://";
+        int idx = -1;
+
+        var lower = text.ToLowerInvariant();
+        int httpIdx = lower.IndexOf(httpPrefix, StringComparison.Ordinal);
+        int httpsIdx = lower.IndexOf(httpsPrefix, StringComparison.Ordinal);
+
+        if (httpsIdx >= 0) idx = httpsIdx;
+        else if (httpIdx >= 0) idx = httpIdx;
+
+        if (idx < 0) return false;
+
+        // Find end of URL (whitespace or end)
+        int end = idx;
+        while (end < text.Length && !char.IsWhiteSpace(text[end])) end++;
+
+        var rawUrl = text.Substring(idx, end - idx);
+
+        // Clean trailing punctuation
+        rawUrl = rawUrl.TrimEnd('.', ',', ')', ']', '}', '!', '?', ':', ';', '"', '\'', '>');
+
+        if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != "http" && uri.Scheme != "https") return false;
+
+        url = rawUrl;
+
+        // Remaining text = before URL + after URL
+        var before = idx > 0 ? text.Substring(0, idx).Trim() : string.Empty;
+        var after = end < text.Length ? text.Substring(end).Trim() : string.Empty;
+        remainingText = (before + " " + after).Trim();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Determines the tool decision for thinking mode based on input analysis.
+    /// </summary>
+    private static ThinkingToolDecision DetermineThinkingDecision(
+        string prompt, string forcedMode, bool hasUrl, bool enableWebTools,
+        DocumentContext documentContext = null)
+    {
+        // Respect forced mode
+        if (string.Equals(forcedMode, "search", StringComparison.OrdinalIgnoreCase))
+            return ThinkingToolDecision.Search;
+        if (string.Equals(forcedMode, "browse", StringComparison.OrdinalIgnoreCase))
+            return ThinkingToolDecision.Browse;
+
+        // If URL detected → Browse (URL takes priority over document)
+        if (hasUrl) return ThinkingToolDecision.Browse;
+
+        // If web tools disabled → None
+        if (!enableWebTools) return ThinkingToolDecision.None;
+
+        // For forced deep mode, always search if no URL
+        if (string.Equals(forcedMode, "deep", StringComparison.OrdinalIgnoreCase))
+            return ThinkingToolDecision.Search;
+
+        // Check if query relates to attached document
+        if (documentContext != null && IsQueryAboutDocument(prompt, documentContext))
+            return ThinkingToolDecision.Document;
+
+        // Minimum query length before auto-detect kicks in
+        if (prompt.Length < 10) return ThinkingToolDecision.None;
+
+        // Check for web-needing keywords
+        var lower = prompt.ToLowerInvariant();
+        var webKeywords = new[]
+        {
+            "terbaru", "hari ini", "berita", "harga", "riset",
+            "bandingkan", "perbandingan", "review", "update", "kabar",
+            "analisis", "rekomendasi", "spesifikasi",
+            "dampak", "fakta", "sumber",
+            "perbedaan", "vs ", " versus"
+        };
+
+        foreach (var kw in webKeywords)
+        {
+            if (lower.Contains(kw)) return ThinkingToolDecision.Search;
+        }
+
+        // Query patterns that strongly indicate web search need
+        if (lower.StartsWith("cari ", StringComparison.OrdinalIgnoreCase)
+            || lower.Contains("cari informasi")
+            || lower.Contains("cari tahu")
+            || lower.Contains("info tentang"))
+            return ThinkingToolDecision.Search;
+
+        // Question words — only trigger if query is long enough (>20) or contains proper nouns
+        if (lower.Contains("kenapa ") || lower.Contains("mengapa ")
+            || lower.Contains("apa itu ") || lower.Contains("siapa itu ")
+            || lower.Contains("bagaimana ") || lower.Contains("di mana "))
+        {
+            // If query has clear entity names (capital letters or long enough), it's search
+            if (prompt.Length >= 20 || prompt.Any(char.IsUpper))
+                return ThinkingToolDecision.Search;
+        }
+
+        return ThinkingToolDecision.None;
+    }
+
+    /// <summary>
+    /// Checks whether a user query is likely asking about the attached document
+    /// by testing keyword overlap between query and document text.
+    /// </summary>
+    private static bool IsQueryAboutDocument(string query, DocumentContext document)
+    {
+        if (string.IsNullOrWhiteSpace(query) || document?.Chunks is null || document.Chunks.Count == 0)
+            return false;
+
+        var queryWords = ExtractDocumentKeywords(query);
+        if (queryWords.Count == 0)
+            return false;
+
+        // Check if any chunk contains a significant number of query keywords
+        int bestMatchCount = 0;
+        foreach (var chunk in document.Chunks)
+        {
+            var matchCount = queryWords.Count(w => 
+                chunk.Text.Contains(w, StringComparison.OrdinalIgnoreCase));
+            if (matchCount > bestMatchCount)
+                bestMatchCount = matchCount;
+        }
+
+        // If at least one keyword matches a chunk, consider it document-related
+        // For short queries (1-2 words), require at least one match
+        // For longer queries, require at least 25% of keywords to match
+        if (queryWords.Count <= 2)
+            return bestMatchCount >= 1;
+        
+        return (double)bestMatchCount / queryWords.Count >= 0.25;
+    }
+
+    /// <summary>
+    /// Extracts meaningful keywords from text, filtering short words and common stopwords.
+    /// Used for document query matching.
+    /// </summary>
+    private static HashSet<string> ExtractDocumentKeywords(string text)
+    {
+        var separators = new[] { ' ', '\n', '\r', '\t', '.', ',', ';', ':', '!', '?',
+            '"', '\'', '(', ')', '[', ']', '{', '}', '-', '_', '/', '\\' };
+        var stopwords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+            "have", "has", "had", "do", "does", "did", "will", "would", "could",
+            "should", "may", "might", "to", "of", "in", "for", "on", "with",
+            "at", "by", "from", "as", "into", "through", "then", "once",
+            "here", "there", "when", "where", "why", "how", "all", "each",
+            "not", "only", "just", "because", "but", "and", "or", "if", "that",
+            "this", "these", "those", "it", "its", "dan", "di", "ke", "dari",
+            "yang", "ini", "itu", "adalah", "untuk", "dengan", "pada", "tidak",
+            "akan", "dalam", "saya", "kamu", "dia", "kami", "mereka"
+        };
+
+        var keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var word in text.Split(separators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var clean = word.Trim().ToLowerInvariant();
+            if (clean.Length > 2 && !stopwords.Contains(clean))
+                keywords.Add(clean);
+        }
+        return keywords;
+    }
+
+    /// <summary>
+    /// Main thinking mode handler. Returns true if the prompt was handled.
+    /// </summary>
+    private async Task<bool> TryHandleThinkingModeAsync(
+        string prompt,
+        string displayPrompt,
+        ChatMessage assistant,
+        string sessionId,
+        ChatApiClient.Provider provider,
+        string model,
+        int sendVersion,
+        CancellationToken ct)
+    {
+        if (!TryParseThinkCommand(prompt, out var userPrompt, out var forcedMode))
+            return false;
+
+        Debug.WriteLine($"[Thinking] mode={forcedMode} prompt='{userPrompt}'");
+
+        // Detect URL
+        var hasUrl = TryExtractFirstUrl(userPrompt, out var url, out var remainingText);
+        var query = hasUrl ? remainingText : userPrompt;
+
+        // Determine depth
+        var depth = forcedMode switch
+        {
+            "quick" => "quick",
+            "deep" => "deep",
+            _ => "auto"
+        };
+
+        // Get session-specific document context
+        _sessionDocuments.TryGetValue(sessionId, out var docContext);
+        if (docContext != null) _currentDocument = docContext;
+
+        // Determine tool decision
+        var decision = DetermineThinkingDecision(userPrompt, forcedMode, hasUrl, EnableWebTools, docContext);
+
+        // Set initial status
+        assistant.Content = decision switch
+        {
+            ThinkingToolDecision.Search => "🔎 Mencari sumber...",
+            ThinkingToolDecision.Browse => "🔗 Membaca halaman...",
+            ThinkingToolDecision.Document => "📄 Membaca dokumen...",
+            _ => "🧠 Menganalisis..."
+        };
+
+        // Determine enableThinking based on depth
+        var enableThinking = depth switch
+        {
+            "quick" => false,
+            "deep" => true,
+            _ => decision != ThinkingToolDecision.None
+        };
+
+        Debug.WriteLine($"[Thinking] decision={decision} depth={depth} enableThinking={enableThinking}");
+
+        switch (decision)
+        {
+            case ThinkingToolDecision.Search:
+                await ExecuteThinkingSearchAsync(query, displayPrompt, assistant, sessionId, sendVersion, provider, model, depth, enableThinking, ct);
+                break;
+
+            case ThinkingToolDecision.Browse:
+                await ExecuteThinkingBrowseAsync(url, query, displayPrompt, assistant, sessionId, sendVersion, provider, model, depth, enableThinking, ct);
+                break;
+
+            case ThinkingToolDecision.Document:
+                await ExecuteThinkingDocumentAsync(query, displayPrompt, assistant, sessionId, sendVersion, provider, model, depth, enableThinking, ct);
+                break;
+
+            default:
+                await ExecuteThinkingNoneAsync(userPrompt, displayPrompt, assistant, sessionId, sendVersion, provider, model, depth, enableThinking, ct);
+                break;
+        }
+
+        return true;
+    }
+
+    private async Task ExecuteThinkingSearchAsync(
+        string query,
+        string displayPrompt,
+        ChatMessage assistant,
+        string sessionId,
+        int sendVersion,
+        ChatApiClient.Provider provider,
+        string model,
+        string depth,
+        bool enableThinking,
+        CancellationToken ct)
+    {
+        Debug.WriteLine($"[Thinking/ExecuteSearch] query='{query}' depth={depth} enableThinking={enableThinking}");
+
+        if (!EnableWebTools)
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant, "Web tools disabled. Enable di Settings > Allow Thinking to use web.", sessionId, sendVersion);
+            return;
+        }
+
+        if (EnableOfflineFallback && IsOffline)
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant, "Search perlu internet. Coba lagi saat online.", sessionId, sendVersion);
+            return;
+        }
+
+        // Persist user message before processing
+        await AppendSessionRecordAsync(sessionId, "user", displayPrompt, model, query, ct);
+
+        SearchGroundingBundle grounding;
+        try
+        {
+            Debug.WriteLine($"[Thinking/ExecuteSearch] calling SearchOrchestrator.RunAsync...");
+            grounding = await _searchOrchestrator.RunAsync(query, ct);
+            Debug.WriteLine($"[Thinking/ExecuteSearch] candidates={grounding.Candidates.Count} pages={grounding.Pages.Count} passages={grounding.Passages.Count} health={grounding.Health.Status}");
+        }
+        catch (Exception ex)
+        {
+            var more = ex.InnerException?.Message;
+            Debug.WriteLine($"[Thinking/ExecuteSearch] EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Maaf, search gagal: " + ex.Message + (string.IsNullOrWhiteSpace(more) ? string.Empty : "\n" + more) +
+                "\n\nTip: coba /browse <url> langsung atau tanya ulang nanti.",
+                sessionId, sendVersion);
+            return;
+        }
+
+        if (grounding.Candidates.Count == 0)
+        {
+            Debug.WriteLine($"[Thinking/ExecuteSearch] 0 candidates — falling back to direct LLM (health={grounding.Health.Status} reason={grounding.Health.Reason})");
+            // All search sources returned nothing (infrastructure failure or query too narrow).
+            // Fall back to direct LLM instead of showing an error.
+            var thinkingInstruction2 = GetThinkingInstructionForDepth(depth);
+            var formatInstruction2 = GetResponseFormatInstruction(hasSources: false);
+            var snapshot2 = await BuildSessionContextSnapshotForNormalChatAsync(sessionId, ct);
+            var safety2 = BuildSafetyAndBoundariesInstruction(
+                "Jawab langsung tanpa web. Voice gua/lu konsisten. Bahasa Indonesia.",
+                thinkingInstruction2,
+                formatInstruction2,
+                GetUnifiedVoiceInstruction());
+
+            var requestMessages2 = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+                safety2,
+                _personaProfileStore.LoadPersona(),
+                _personaProfileStore.LoadProfile(),
+                Array.Empty<PersonalMemoryItem>(),
+                snapshot2,
+                query));
+            requestMessages2 = ApplyDcp(requestMessages2, provider);
+
+            assistant.Content = "🧠 Menyusun jawaban (pencarian web nggak tersedia)...";
+
+            var captured2 = await StreamAssistantResponseAsync(
+                provider, requestMessages2, model, enableThinking: false,
+                assistant, sessionId, sendVersion,
+                flushIntervalMs: 140, allowUiUpdate: true, ct);
+
+            if (!string.IsNullOrWhiteSpace(captured2))
+            {
+                await SetAssistantContentOnUiThreadAsync(assistant, captured2, sessionId, sendVersion);
+                await AppendSessionRecordAsync(sessionId, "assistant", captured2, model, string.Empty, ct);
+            }
+            else
+            {
+                Debug.WriteLine("[ExecuteThinkingSearch] fallback streaming returned empty (timeout)");
+                await SetAssistantContentOnUiThreadAsync(assistant,
+                    "Maaf, jawaban AI-nya gak kunjung datang (timeout). " +
+                    "Coba ganti provider di Settings > Provider & Model, " +
+                    "atau coba langsung /think search <query> kalo internet-nya lancar.",
+                    sessionId, sendVersion);
+            }
+            return;
+        }
+
+        if (grounding.Pages.Count == 0 || grounding.Passages.Count == 0)
+        {
+            Debug.WriteLine($"[Thinking/ExecuteSearch] pages={grounding.Pages.Count} passages={grounding.Passages.Count} — not enough evidence");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Search nemuin kandidat (" + grounding.Candidates.Count + ") tapi gagal ngekstrak evidence yang cukup. " +
+                "Coba query yang lebih spesifik atau browse URL langsung.",
+                sessionId, sendVersion);
+            return;
+        }
+
+        if (grounding.Health.Status is SearchHealthStatus.NoEvidence)
+        {
+            Debug.WriteLine($"[Thinking/ExecuteSearch] NoEvidence — {grounding.Health.Reason}");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Search nemuin kandidat tapi evidence masih terlalu lemah/wiki-heavy. " +
+                "Coba query yang lebih spesifik.",
+                sessionId, sendVersion);
+            return;
+        }
+
+        Debug.WriteLine($"[Thinking/ExecuteSearch] PASS — candidates={grounding.Candidates.Count} healthy={grounding.Health.IsHealthy}");
+
+        var unhealthy = !grounding.Health.IsHealthy;
+
+        var results = grounding.Candidates
+            .Select(c => new FreeSearchClient.SearchResult(c.Title, c.Url, c.Snippet, c.Source))
+            .ToList();
+        var browsedPages = grounding.Pages
+            .Select(p => new BrowseClient.BrowsePage(p.Url, p.Title, p.Text))
+            .ToList();
+
+        var sourcesBlock = _searchGroundingComposer.BuildSourcesBlock(grounding, maxSources: 5);
+        var evidenceBlock = _searchGroundingComposer.BuildEvidenceBlock(grounding, maxPassages: 5);
+        var healthBlock = new StringBuilder();
+        healthBlock.AppendLine("Search health:");
+        healthBlock.AppendLine($"- Status: {grounding.Health.Status}");
+        healthBlock.AppendLine($"- Reason: {grounding.Health.Reason}");
+        healthBlock.AppendLine($"- Candidate count: {grounding.Diagnostics.CandidateCount}");
+        healthBlock.AppendLine($"- Non-wiki candidates: {grounding.Diagnostics.NonWikiCandidateCount}");
+        healthBlock.AppendLine($"- Page count: {grounding.Diagnostics.PageCount}");
+        healthBlock.AppendLine($"- Non-wiki pages: {grounding.Diagnostics.NonWikiPageCount}");
+        healthBlock.AppendLine($"- Passage count: {grounding.Diagnostics.PassageCount}");
+        healthBlock.AppendLine($"- Non-wiki passages: {grounding.Diagnostics.NonWikiPassageCount}");
+
+        // Build thinking mode instruction
+        var thinkingInstruction = GetThinkingInstructionForDepth(depth);
+        var formatInstruction = GetNaturalSearchInstruction();
+        var snapshot = await BuildSessionContextSnapshotForSearchAsync(sessionId, ct);
+        var groundingRules = BuildThinkingSearchGroundingRules();
+        var safety = BuildSafetyAndBoundariesInstruction(
+            "Jawab berdasarkan evidence dari sumber web. Bahasa Indonesia. Voice gua/lu konsisten. Jangan roleplay.",
+            thinkingInstruction,
+            formatInstruction,
+            GetUnifiedVoiceInstruction(),
+            groundingRules,
+            healthBlock.ToString().Trim(),
+            "Search sources:\n\n" + sourcesBlock,
+            "Evidence passages:\n\n" + evidenceBlock);
+
+        var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+            safety,
+            CreateSearchSafePersona(_personaProfileStore.LoadPersona()),
+            _personaProfileStore.LoadProfile(),
+            null,
+            snapshot,
+            query));
+        requestMessages = ApplyDcp(requestMessages, provider);
+
+        // Log prompt size for diagnostics
+        var totalSysChars = requestMessages
+            .Select(m => TryGetRoleAndContent(m, out _, out var c) ? (c ?? string.Empty).Length : 0)
+            .Sum();
+        Debug.WriteLine($"[ExecuteSearch] promptMessages={requestMessages.Count} totalSysChars={totalSysChars}");
+
+        assistant.Content = "🧩 Menyusun jawaban...";
+
+        var beforeStreamMs = Environment.TickCount;
+        var captured = await StreamAssistantResponseAsync(
+            provider, requestMessages, model, enableThinking,
+            assistant, sessionId, sendVersion,
+            flushIntervalMs: 140, allowUiUpdate: true, ct);
+
+        var streamElapsed = Environment.TickCount - beforeStreamMs;
+        Debug.WriteLine($"[ExecuteSearch] streamDone capturedLen={(captured ?? string.Empty).Length} elapsedMs={streamElapsed}");
+
+        if (!string.IsNullOrWhiteSpace(captured))
+        {
+            var validated = ValidateAndCleanSearchOutput(captured, results, browsedPages, grounding);
+            if (unhealthy && !validated.Contains("terbatas", StringComparison.OrdinalIgnoreCase)
+                           && !validated.Contains("belum", StringComparison.OrdinalIgnoreCase))
+            {
+                validated = PrependNaturalEvidenceWarning(validated, grounding.Health, grounding.Diagnostics);
+            }
+            await SetAssistantContentOnUiThreadAsync(assistant, validated, sessionId, sendVersion);
+            await AppendSessionRecordAsync(sessionId, "assistant", validated, model, string.Empty, ct);
+        }
+        else
+        {
+            // Streaming timed out with no content — replace the stuck status message.
+            Debug.WriteLine("[ExecuteSearch] streaming returned empty (timeout)");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Search selesai tapi respon AI-nya gak kunjung datang (timeout). " +
+                "Coba query yang lebih pendek/spesifik, atau menggunakan /browse <url> langsung.",
+                sessionId, sendVersion);
+        }
+    }
+
+    private async Task ExecuteThinkingBrowseAsync(
+        string url,
+        string question,
+        string displayPrompt,
+        ChatMessage assistant,
+        string sessionId,
+        int sendVersion,
+        ChatApiClient.Provider provider,
+        string model,
+        string depth,
+        bool enableThinking,
+        CancellationToken ct)
+    {
+        Debug.WriteLine($"[Thinking/ExecuteBrowse] url='{url}' question='{question}' depth={depth}");
+
+        if (!EnableWebTools)
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant, "Web tools disabled. Enable di Settings > Allow Thinking to use web.", sessionId, sendVersion);
+            return;
+        }
+
+        if (EnableOfflineFallback && IsOffline)
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant, "Browse perlu internet. Coba lagi saat online.", sessionId, sendVersion);
+            return;
+        }
+
+        var q = string.IsNullOrWhiteSpace(question) ? "Ringkas isi halaman ini dalam bahasa Indonesia." : question;
+
+        // Persist user message before processing
+        await AppendSessionRecordAsync(sessionId, "user", displayPrompt, model, q, ct);
+
+        BrowseClient.BrowsePage page;
+        try
+        {
+            Debug.WriteLine($"[Thinking/ExecuteBrowse] calling BrowseClient.FetchAsync...");
+            page = await _browse.FetchAsync(url, ct);
+            Debug.WriteLine($"[Thinking/ExecuteBrowse] OK title='{page?.Title}' textLen={page?.Text?.Length ?? 0}");
+        }
+        catch (Exception ex)
+        {
+            var more = ex.InnerException?.Message;
+            Debug.WriteLine($"[Thinking/ExecuteBrowse] EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Maaf, gagal baca halaman: " + ex.Message + (string.IsNullOrWhiteSpace(more) ? string.Empty : "\n" + more) +
+                "\n\nTip: Cek URL-nya atau coba search manual.",
+                sessionId, sendVersion);
+            return;
+        }
+        var thinkingInstruction = GetThinkingInstructionForDepth(depth);
+        var formatInstruction = GetThinkingBrowseFormatInstruction();
+
+        var pageBlock = new StringBuilder();
+        pageBlock.AppendLine("[1] " + page.Url);
+        if (!string.IsNullOrWhiteSpace(page.Title)) pageBlock.AppendLine(page.Title);
+        pageBlock.AppendLine();
+        var compactText = page.Text;
+        if (compactText.Length > 3500)
+            compactText = compactText.Substring(0, 3500) + "\n\n[...excerpt truncated...]";
+        pageBlock.AppendLine(compactText);
+
+        var snapshot = await BuildSessionContextSnapshotForBrowseAsync(sessionId, ct);
+        var groundingRules = new StringBuilder();
+        groundingRules.AppendLine("Aturan /think browse:");
+        groundingRules.AppendLine("- Jawaban akhir WAJIB Bahasa Indonesia.");
+        groundingRules.AppendLine("- Ringkas, langsung ke inti. Maksimal 6 poin.");
+        groundingRules.AppendLine("- Jika sumber berbahasa Inggris, parafrase ke Indonesia.");
+        groundingRules.AppendLine("- Jika konten tidak cukup, akui keterbatasan.");
+        groundingRules.AppendLine("- Tetap pihak ketiga, jangan roleplay.");
+        groundingRules.AppendLine("- Voice wajib gua/lu konsisten.");
+        groundingRules.AppendLine("- Cantumkan sumber: [1] URL");
+
+        var safety = BuildSafetyAndBoundariesInstruction(
+            "Gunakan bukti dari halaman web. Jawab Bahasa Indonesia ringkas. Voice gua/lu.",
+            thinkingInstruction,
+            formatInstruction,
+            GetUnifiedVoiceInstruction(),
+            groundingRules.ToString().Trim(),
+            "Web page excerpt:\n\n" + pageBlock.ToString().Trim());
+
+        var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+            safety,
+            CreateSearchSafePersona(_personaProfileStore.LoadPersona()),
+            _personaProfileStore.LoadProfile(),
+            null,
+            snapshot,
+            q));
+        requestMessages = ApplyDcp(requestMessages, provider);
+
+        assistant.Content = "🧩 Menyusun ringkasan...";
+
+        var captured = await StreamAssistantResponseAsync(
+            provider, requestMessages, model, enableThinking,
+            assistant, sessionId, sendVersion,
+            flushIntervalMs: 140, allowUiUpdate: true, ct);
+
+        if (!string.IsNullOrWhiteSpace(captured))
+        {
+            var cleaned = EnforceStrictBrowseTemplate(captured, page.Url);
+            await SetAssistantContentOnUiThreadAsync(assistant, cleaned, sessionId, sendVersion);
+            await AppendSessionRecordAsync(sessionId, "assistant", cleaned, model, string.Empty, ct);
+        }
+        else
+        {
+            Debug.WriteLine("[ExecuteThinkingBrowse] streaming returned empty (timeout)");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Ringkasan halaman gagal dibuat karena respon AI timeout. " +
+                "Coba /think search dengan kata kunci spesifik atau buka URL-nya langsung.",
+                sessionId, sendVersion);
+        }
+    }
+
+    /// <summary>
+    /// Builds a document context block for the system prompt, or null if no document is attached.
+    /// Uses keyword overlap to retrieve the most relevant chunks for the current query.
+    /// </summary>
+    private string BuildDocumentContextBlock(string sessionId, string query)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return null;
+
+        if (!_sessionDocuments.TryGetValue(sessionId, out var doc) || doc is null)
+            return null;
+
+        if (doc.Chunks.Count == 0)
+            return null;
+
+        // Get relevant chunks for the user's query
+        var relevantChunks = string.IsNullOrWhiteSpace(query)
+            ? doc.Chunks.Take(4).ToList()
+            : _documentChunker.RetrieveRelevantChunks(query, doc.Chunks);
+
+        if (relevantChunks.Count == 0)
+            return null;
+
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("=== KONTEKS DOKUMEN ===");
+        sb.AppendLine($"File: {doc.FileName} ({doc.Format.ToUpperInvariant()})");
+        sb.AppendLine();
+        foreach (var chunk in relevantChunks)
+        {
+            sb.AppendLine($"[{chunk.SourceLabel}]");
+            sb.AppendLine(chunk.Text);
+            sb.AppendLine();
+        }
+        sb.AppendLine("=== AKHIR KONTEKS DOKUMEN ===");
+
+        return sb.ToString().Trim();
+    }
+
+    private async Task ExecuteThinkingDocumentAsync(
+        string userPrompt,
+        string displayPrompt,
+        ChatMessage assistant,
+        string sessionId,
+        int sendVersion,
+        ChatApiClient.Provider provider,
+        string model,
+        string depth,
+        bool enableThinking,
+        CancellationToken ct)
+    {
+        Debug.WriteLine($"[Thinking/ExecuteDocument] prompt='{userPrompt}' depth={depth}");
+
+        // Resolve document context for this session
+        if (!_sessionDocuments.TryGetValue(sessionId, out var docContext) || docContext is null)
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Tidak ada dokumen yang terpasang di sesi ini. Gunakan + > Attach Document untuk memasang file.",
+                sessionId, sendVersion);
+            return;
+        }
+
+        _currentDocument = docContext;
+        OnPropertyChanged(nameof(HasDocumentAttached));
+        OnPropertyChanged(nameof(DocumentFileInfo));
+
+        // Persist user message
+        await AppendSessionRecordAsync(sessionId, "user", displayPrompt, model, displayPrompt, ct);
+
+        // Retrieve relevant chunks
+        var relevantChunks = _documentChunker.RetrieveRelevantChunks(userPrompt, docContext.Chunks);
+
+        var thinkingInstruction = GetThinkingInstructionForDepth(depth);
+        var formatInstruction = GetResponseFormatInstruction(hasSources: true);
+
+        // Build document context block for the prompt
+        var docBlock = new StringBuilder();
+        docBlock.AppendLine($"[DOKUMEN: {docContext.FileName}]");
+        docBlock.AppendLine($"Format: {docContext.Format.ToUpperInvariant()}");
+        docBlock.AppendLine($"Total: {docContext.TotalChars} karakter, {docContext.Chunks.Count} potongan");
+        docBlock.AppendLine();
+        docBlock.AppendLine("Konten relevan dari dokumen:");
+        foreach (var chunk in relevantChunks)
+        {
+            docBlock.AppendLine();
+            docBlock.AppendLine($"=== {chunk.SourceLabel} ===");
+            docBlock.AppendLine(chunk.Text);
+        }
+
+        var docRules = new StringBuilder();
+        docRules.AppendLine("ATURAN DOKUMEN (WAJIB):");
+        docRules.AppendLine("- Jawab berdasarkan konten dokumen yang diberikan di atas.");
+        docRules.AppendLine("- Sitasi sumber: sebut label chunk (\"menurut dokumen (chunk 2)\") jika relevan.");
+        docRules.AppendLine("- Jika dokumen tidak cukup menjawab, bilang terus terang.");
+        docRules.AppendLine("- Jangan menambahkan fakta dari luar dokumen.");
+        docRules.AppendLine("- Voice wajib gua/lu konsisten.");
+        docRules.AppendLine("- Jawaban akhir WAJIB Bahasa Indonesia.");
+
+        var snapshot = await BuildSessionContextSnapshotForNormalChatAsync(sessionId, ct);
+        var safety = BuildSafetyAndBoundariesInstruction(
+            "Jawab berdasarkan konten dokumen. Voice gua/lu. Bahasa Indonesia.",
+            thinkingInstruction,
+            formatInstruction,
+            GetUnifiedVoiceInstruction(),
+            docRules.ToString().Trim(),
+            docBlock.ToString().Trim());
+
+        var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+            safety,
+            _personaProfileStore.LoadPersona(),
+            _personaProfileStore.LoadProfile(),
+            Array.Empty<PersonalMemoryItem>(),
+            snapshot,
+            userPrompt));
+        requestMessages = ApplyDcp(requestMessages, provider);
+
+        assistant.Content = "📄 Menganalisis dokumen...";
+
+        var captured = await StreamAssistantResponseAsync(
+            provider, requestMessages, model, enableThinking,
+            assistant, sessionId, sendVersion,
+            flushIntervalMs: 140, allowUiUpdate: true, ct);
+
+        if (!string.IsNullOrWhiteSpace(captured))
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant, captured, sessionId, sendVersion);
+            await AppendSessionRecordAsync(sessionId, "assistant", captured, model, string.Empty, ct);
+        }
+        else
+        {
+            Debug.WriteLine("[ExecuteThinkingDocument] streaming returned empty (timeout)");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Analisis dokumen gagal karena respon AI timeout. Coba tanya ulang dengan pertanyaan lebih pendek.",
+                sessionId, sendVersion);
+        }
+    }
+
+    private async Task ExecuteThinkingNoneAsync(
+        string userPrompt,
+        string displayPrompt,
+        ChatMessage assistant,
+        string sessionId,
+        int sendVersion,
+        ChatApiClient.Provider provider,
+        string model,
+        string depth,
+        bool enableThinking,
+        CancellationToken ct)
+    {
+        Debug.WriteLine($"[Thinking/ExecuteNone] prompt='{userPrompt}' depth={depth} enableThinking={enableThinking}");
+
+        // Persist user message
+        await AppendSessionRecordAsync(sessionId, "user", displayPrompt, model, displayPrompt, ct);
+
+        var thinkingInstruction = GetThinkingInstructionForDepth(depth);
+        var formatInstruction = GetResponseFormatInstruction(hasSources: false);
+        var snapshot = await BuildSessionContextSnapshotForNormalChatAsync(sessionId, ct);
+        var safety = BuildSafetyAndBoundariesInstruction(
+            "Jawab langsung tanpa web. Voice gua/lu konsisten. Bahasa Indonesia.",
+            thinkingInstruction,
+            formatInstruction,
+            GetUnifiedVoiceInstruction());
+
+        var requestMessages = _promptContextAssembler.Build(new PromptContextAssembler.BuildInput(
+            safety,
+            _personaProfileStore.LoadPersona(),
+            _personaProfileStore.LoadProfile(),
+            Array.Empty<PersonalMemoryItem>(),
+            snapshot,
+            userPrompt));
+        requestMessages = ApplyDcp(requestMessages, provider);
+
+        assistant.Content = "🧠 Menyusun jawaban...";
+
+        var captured = await StreamAssistantResponseAsync(
+            provider, requestMessages, model, enableThinking,
+            assistant, sessionId, sendVersion,
+            flushIntervalMs: 140, allowUiUpdate: true, ct);
+
+        if (!string.IsNullOrWhiteSpace(captured))
+        {
+            await SetAssistantContentOnUiThreadAsync(assistant, captured, sessionId, sendVersion);
+            await AppendSessionRecordAsync(sessionId, "assistant", captured, model, string.Empty, ct);
+        }
+        else
+        {
+            Debug.WriteLine("[ExecuteThinkingNone] streaming returned empty (timeout)");
+            await SetAssistantContentOnUiThreadAsync(assistant,
+                "Maaf, respon AI-nya gak kunjung datang (timeout). " +
+                "Coba tanya ulang dengan pertanyaan yang lebih pendek, " +
+                "atau gunakan /think search untuk pencarian web.",
+                sessionId, sendVersion);
+        }
+    }
+
+    private string GetThinkingInstructionForDepth(string depth)
+    {
+        // IMPORTANT: These instructions MUST prevent chain-of-thought leakage.
+        // The model must NOT output internal reasoning steps, planning, or tool decisions.
+        var co = "DILARANG KERAS menampilkan proses berpikir internal, planning, atau alasan memilih tool. " +
+                   "Jangan tulis 'Step 1', 'Saya berpikir', atau 'Gua bakal nge-search dulu'. " +
+                   "Langsung berikan jawaban akhir yang utuh dan natural.";
+        return depth switch
+        {
+            "quick" => "Jawab langsung dengan ringkas dan natural. " + co,
+            "deep" => "Analisis secara mendalam tapi jangan tampilkan proses berpikir. " + co,
+            _ => "Pertimbangkan dengan saksama. " + co
+        };
+    }
+
+    private static string GetThinkingBrowseFormatInstruction()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("KONSTRAINT OUTPUT BROWSE (WAJIB):");
+        sb.AppendLine("- Jawaban akhir HARUS Bahasa Indonesia.");
+        sb.AppendLine("- Ringkas, jelas, langsung ke inti (maksimal 6 poin total).");
+        sb.AppendLine("- Jangan copy-tempel kalimat panjang dari halaman sumber.");
+        sb.AppendLine("- Jika sumber berbahasa Inggris, parafrasekan ke Bahasa Indonesia.");
+        sb.AppendLine("- Jika konten tidak cukup jelas/noisy, akui keterbatasan data secara jujur.");
+        sb.AppendLine("- Tetap sudut pandang pihak ketiga, jangan roleplay subjek halaman.");
+        sb.AppendLine("- Voice wajib konsisten gaya ChatAyi: pakai gua/lu.");
+        sb.AppendLine("- Cantumkan sumber:");
+        sb.AppendLine("[1] <url>");
+        return sb.ToString().Trim();
+    }
+
+    private static string BuildThinkingSearchGroundingRules()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("GROUNDING RULES (THINKING MODE — WAJIB DIIKUTI):");
+        sb.AppendLine();
+        sb.AppendLine("[ZERO HALLUCINATION POLICY]");
+        sb.AppendLine("- Jawab HANYA berdasarkan evidence passages dan sources yang diberikan di bawah.");
+        sb.AppendLine("- Evidence passages adalah satu-satunya dasar klaim fakta. DILARANG menambah fakta dari pengetahuan internal model.");
+        sb.AppendLine("- Candidate URL tanpa evidence passage tidak boleh dipakai untuk klaim detail kecuali judul/snippet sangat eksplisit.");
+        sb.AppendLine("- Jika evidence TIDAK mendukung klaim tertentu, JANGAN tulis klaim itu sama sekali. Lebih baik jawaban pendek tapi akurat daripada panjang tapi ngarang.");
+        sb.AppendLine("- Jika data tidak cukup/konflik, bilang terus terang secara natural.");
+        sb.AppendLine();
+        sb.AppendLine("[LANGUAGE & VOICE]");
+        sb.AppendLine("- Jawaban akhir WAJIB Bahasa Indonesia. Dilarang menjawab dalam bahasa Inggris.");
+        sb.AppendLine("- Voice wajib konsisten: pakai gua/lu, jangan campur kamu/Anda/gaya netral.");
+        sb.AppendLine("- Hindari gaya ensiklopedik, akademik, atau terlalu formal seperti artikel.");
+        sb.AppendLine("- Tulis seperti orang biasa lagi jelasin ke temennya, santai tapi tetap informatif.");
+        sb.AppendLine();
+        sb.AppendLine("[IDENTITY SAFETY]");
+        sb.AppendLine("- Kamu adalah ChatAyi, bukan subjek yang dibahas.");
+        sb.AppendLine("- Dilarang menjawab seolah-olah kamu adalah orang yang sedang dibahas.");
+        sb.AppendLine("- Semua jawaban HARUS menggunakan sudut pandang pihak ketiga.");
+        sb.AppendLine("- Jika sumber menggunakan gaya orang pertama (gue/saya/aku), WAJIB dikonversi menjadi pihak ketiga.");
+        sb.AppendLine();
+        sb.AppendLine("[FORMAT — NATURAL ONLY]");
+        sb.AppendLine("- DILARANG menggunakan tag [FAKTA], [INFERENSI], atau format bullet template kaku.");
+        sb.AppendLine("- Tulis jawaban sebagai paragraf natural yang mengalir.");
+        sb.AppendLine("- Sebutkan sumber secara natural di akhir (contoh: '📎 Gua dapet info ini dari Wikipedia dan berita resmi.')");
+        return sb.ToString().Trim();
     }
 
     private async void OnBackClicked(object sender, EventArgs e)
